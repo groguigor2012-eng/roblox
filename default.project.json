@@ -1,0 +1,33 @@
+{
+  "name": "Poolrooms",
+  "tree": {
+    "$className": "DataModel",
+    "ReplicatedStorage": {
+      "Poolrooms": {
+        "$path": "src/shared"
+      }
+    },
+    "ServerScriptService": {
+      "Poolrooms": {
+        "$path": "src/server"
+      }
+    },
+    "StarterPlayer": {
+      "$properties": {
+        "CameraMode": "LockFirstPerson",
+        "CameraMaxZoomDistance": 0.5,
+        "CharacterWalkSpeed": 11
+      },
+      "StarterPlayerScripts": {
+        "Poolrooms": {
+          "$path": "src/client"
+        }
+      }
+    },
+    "Lighting": {
+      "$properties": {
+        "Technology": "Future"
+      }
+    }
+  }
+}

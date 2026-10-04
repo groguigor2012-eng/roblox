@@ -1,0 +1,5 @@
+*.rbxl
+*.rbxlx
+sourcemap.json
+tests/.mods/
+__pycache__/
