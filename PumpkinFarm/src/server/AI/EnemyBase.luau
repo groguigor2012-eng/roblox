@@ -47,6 +47,7 @@
 
 local Debris = game:GetService("Debris")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
 
 local Shared = ReplicatedStorage.Shared
 local Attributes = require(Shared.Constants.Attributes)
@@ -165,7 +166,7 @@ end
 
 function EnemyBase:_claimNetworkOwnership()
 	local root = self.Root
-	if root and root:IsDescendantOf(game) and not root.Anchored then
+	if root and root:IsDescendantOf(Workspace) and not root.Anchored then
 		pcall(function()
 			root:SetNetworkOwner(nil)
 		end)

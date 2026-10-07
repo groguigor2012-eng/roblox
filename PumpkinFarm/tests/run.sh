@@ -4,6 +4,7 @@
 #   2. selene lint (undefined/unused variables)     - optional, needs selene
 #   3. static cross-reference checks                - needs python3
 #   4. headless unit + transaction specs            - needs Lune
+#   5. end-to-end server simulation (4 scenarios)   - needs Lune, about a minute
 # Run from anywhere: PumpkinFarm/tests/run.sh
 set -e
 cd "$(dirname "$0")/.."
@@ -15,3 +16,4 @@ else
 fi
 python3 tests/static_check.py
 lune run tests/run.luau
+lune run tests/simulate.luau

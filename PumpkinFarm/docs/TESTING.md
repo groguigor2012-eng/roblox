@@ -2,8 +2,9 @@
 
 Two layers:
 
-1. **Automated, headless** (`tests/run.sh`): compile, lint, static cross-references and 221 Lune
-   specs. Run it before every commit.
+1. **Automated, headless** (`tests/run.sh`): compile, lint, static cross-references, 221 Lune
+   specs and an end-to-end simulation of the real server running whole matches. Run it before
+   every commit.
 2. **Studio test plan** (below): the engine-dependent behaviour (physics, pathfinding, UI,
    replication, multiple clients). Grouped by engineering phase.
 
@@ -30,6 +31,30 @@ Two layers:
 | `router_spec` | Mole A* routes around bedrock through the only gap, sealed targets return nil, bounds and expansion budget, no diagonal squeeze between bedrock cells (regression), probe caching, resurface point placement |
 | `security_spec` | rate limiter isolation per player and remote, cleanup on leave, 100-request spam admits only a handful |
 | `transactions_spec` | real DataService (in-memory store): grant validation, rollback of failing mutations, no grants to unloaded players. Real SeedShopService: charge-once, stale version, closed shop, insufficient funds, **two players racing for the last seed → exactly one wins**. ClassService and UpgradeService atomicity and caps. Real EscapeService: escape pays once, repeat decisions rejected, door range / closed door / downed, Continue keeps undecided players, nobody continuing → everyone escaped and paid exactly once. |
+
+### End-to-end server simulation (`tests/simulate.luau`)
+
+`tests/sim/` runs the **unmodified server** (Bootstrap, all 29 services, every AI, the real map)
+in virtual time, with fake players that act only through the real remotes and chat commands:
+
+| Piece | What it does |
+|---|---|
+| `sim/Scheduler.luau` | virtual-time `task` library and `os.clock`; minutes of game time run in seconds, deterministically. Errors in any thread are recorded and fail the scenario. |
+| `sim/Geometry.luau` | `Workspace:Raycast`, `Spherecast`, `GetPartBoundsInBox` over the built map (oriented boxes, a 16-stud grid for static geometry, CanQuery and the Ghost group honoured), plus walking collision and ground probing |
+| `sim/Engine.luau` | mounts the Rojo tree, emulates Players (characters, Backpack, Chatted, Kick), RemoteEvents/Functions, Humanoid walking (`MoveTo`, collision, ground snap, `PlatformStand` ballistics, health regeneration, `Died`), `AlignPosition`/`AlignOrientation`, and a PathfindingService backed by the Mole's A* router over the real map |
+
+Scenarios (a script error or an unexpected warning fails the scenario; players' last events are
+dumped on failure):
+
+| Scenario | Proves |
+|---|---|
+| solo full loop | queue → intermission → buy seeds → plant → build a barricade → waves 1-5 cleared by a bot → harvest into the chest → door → escape → payout equals the chest value exactly once → statistics committed once → match and arena destroyed |
+| duo | two players share a match; every enemy archetype spawned and observed acting (a Mole goes underground, a Witch summons minions, a Scarecrow stuns, a potion slows, crops are stolen or eaten); the Cursed Harvester spawns, the boss HUD shows and clears, its kill deposits a Cursed Core; boss wave 10 → door → one player continues, the other escapes and is paid; 30 s preparation at danger ×1.5; the farm then falls, the loss is recorded and everything is cleaned up |
+| disconnects | leaving mid-wave ends the match as Abandoned and releases the profile |
+| balance smoke | an unprotected, naive Knight bot defending alone survives at least 3 waves (prints the wave it reached) |
+
+The simulation is an approximation (no rigid-body physics, simplified pathfinding), so it
+complements the Studio plan below rather than replacing it.
 
 ## 2. Debug commands (Studio)
 

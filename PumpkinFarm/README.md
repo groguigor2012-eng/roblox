@@ -87,6 +87,8 @@ compiles all 123 source files, lints them, cross-checks every service call, `req
 effect name, and runs 221 headless specs: difficulty curves, wave composition, seed shop stock and
 races, Harvest Chest payouts, profile session locking and migrations, the Mole's underground A*
 router, rate limiting, purchase atomicity, escape double-payout protection, every procedural model
-and map, and the whole client UI (Lune validates every Instance property name and type).
+and map, and the whole client UI (Lune validates every Instance property name and type). Finally it runs the
+unmodified server in virtual time with bot players: a full solo loop to escape and payout, a duo
+match with every enemy type, the boss, Continue and a loss, a disconnect, and a balance smoke test.
 
-Engine behaviour (physics, pathfinding, UI) can only be exercised in Studio; follow docs/TESTING.md.
+Exact engine behaviour (physics, real pathfinding, UI feel) still needs Studio; follow docs/TESTING.md.

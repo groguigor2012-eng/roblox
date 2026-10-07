@@ -63,7 +63,7 @@ The skeleton every other system plugs into.
 | Area | Files |
 |---|---|
 | Debug | `DebugConfig`, `DebugService` (gated chat commands) |
-| Verification | `tests/run.sh`, `TESTING.md` Studio test plan |
+| Verification | `tests/run.sh`, end-to-end server simulation (`tests/simulate.luau`, `tests/sim/`), `TESTING.md` Studio test plan |
 | Docs | `README.md`, `ARCHITECTURE.md`, `PHASES.md` |
 
 Review fixes found while hardening and applied across phases:
@@ -76,6 +76,7 @@ Review fixes found while hardening and applied across phases:
 - profile release by another server or backend kicks the player (both backends)
 - players spawn in the lobby immediately while their profile loads
 - touch placement uses `ScreenPointToRay` (touch positions exclude the top-bar inset)
+- enemies claim network ownership only once their root is in the Workspace (`IsDescendantOf`), found by the end-to-end simulation
 
 ## Completion checklist
 
