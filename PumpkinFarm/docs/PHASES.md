@@ -10,7 +10,7 @@ service list from Phase 1, so a server started from an earlier commit stops with
 
 ## Phase 1: Foundation, data and networking
 
-The skeleton every other system plugs into.
+The skeleton every other system plugs into. Full write-up and source: [phase1/PHASE1.md](phase1/PHASE1.md).
 
 | Area | Files |
 |---|---|

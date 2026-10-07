@@ -74,6 +74,9 @@ PumpkinFarm/
   performance and memory safety.
 - **[docs/PHASES.md](docs/PHASES.md)**: the five engineering phases, what each one delivers, and the
   completion checklist.
+- **[docs/phase1/PHASE1.md](docs/phase1/PHASE1.md)**: the Phase 1 foundation deliverable (hierarchy,
+  attributes, bootstraps, remotes, data, dependencies, Studio and verification checklists), with the
+  complete Phase 1 source in [PHASE1_SOURCE.md](docs/phase1/PHASE1_SOURCE.md).
 - **[docs/TESTING.md](docs/TESTING.md)**: automated checks and the Studio test plan (gameplay,
   multiplayer, exploit, failure and cleanup tests), plus debug commands.
 
