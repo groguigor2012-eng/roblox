@@ -1,0 +1,47 @@
+---
+base: luau
+name: pumpkinfarm
+globals:
+  game: { any: true }
+  workspace: { any: true }
+  script: { any: true }
+  plugin: { any: true }
+  shared: { any: true }
+  Instance: { any: true }
+  Vector3: { any: true }
+  Vector2: { any: true }
+  Vector3int16: { any: true }
+  CFrame: { any: true }
+  Color3: { any: true }
+  ColorSequence: { any: true }
+  ColorSequenceKeypoint: { any: true }
+  NumberSequence: { any: true }
+  NumberSequenceKeypoint: { any: true }
+  NumberRange: { any: true }
+  BrickColor: { any: true }
+  Enum: { any: true }
+  Random: { any: true }
+  RaycastParams: { any: true }
+  OverlapParams: { any: true }
+  TweenInfo: { any: true }
+  UDim: { any: true }
+  UDim2: { any: true }
+  Rect: { any: true }
+  Ray: { any: true }
+  Region3: { any: true }
+  PhysicalProperties: { any: true }
+  Font: { any: true }
+  PathWaypoint: { any: true }
+  DateTime: { any: true }
+  task: { any: true }
+  typeof: { any: true }
+  tick: { any: true }
+  time: { any: true }
+  wait: { any: true }
+  delay: { any: true }
+  spawn: { any: true }
+  warn: { any: true }
+  elapsedTime: { any: true }
+  settings: { any: true }
+  UserSettings: { any: true }
+  version: { any: true }

@@ -1,0 +1,5 @@
+std = "pumpkinfarm"
+
+[rules]
+# Luau type annotations make some shadowing intentional (e.g. narrowing).
+shadowing = "allow"
