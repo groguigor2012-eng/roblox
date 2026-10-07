@@ -28,7 +28,7 @@ function Sentry.new(match: any, definition: any, cframe: CFrame, owner: Player?,
 	setmetatable(self, Sentry)
 	self.NextFireAt = 0
 	self.Head = self.Model:FindFirstChild("Head") :: BasePart?
-	self.MuzzlePosition = if self.Head then self.Head.Position else self.Position + Vector3.new(0, definition.Size.Y, 0)
+	self.MuzzlePosition = if self.Head then self.Head.CFrame.Position else self.Position + Vector3.new(0, definition.Size.Y, 0)
 	self._sightParams = RaycastParams.new()
 	self._sightParams.FilterType = Enum.RaycastFilterType.Include
 	self._sightParams.FilterDescendantsInstances = { match.Arena.PropsFolder, match.Arena.GroundFolder }
@@ -60,9 +60,10 @@ end
 function Sentry:_aimAt(position: Vector3)
 	local head = self.Head
 	if head then
-		local flat = Vector3.new(position.X, head.Position.Y, position.Z)
-		if (flat - head.Position).Magnitude > 0.1 then
-			head.CFrame = CFrame.lookAt(head.Position, flat)
+		local headPosition = head.CFrame.Position
+		local flat = Vector3.new(position.X, headPosition.Y, position.Z)
+		if (flat - headPosition).Magnitude > 0.1 then
+			head.CFrame = CFrame.lookAt(headPosition, flat)
 		end
 	end
 end
@@ -113,7 +114,7 @@ function Sentry:OnUpgraded()
 	local head = self.Head
 	if head then
 		head.Size *= 1.08
-		self.MuzzlePosition = head.Position
+		self.MuzzlePosition = head.CFrame.Position
 	end
 end
 

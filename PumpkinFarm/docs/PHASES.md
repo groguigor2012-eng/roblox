@@ -75,6 +75,7 @@ Review fixes found while hardening and applied across phases:
 - procedural enemy humanoids use the R15 rig type so `HipHeight` is honoured
 - profile release by another server or backend kicks the player (both backends)
 - players spawn in the lobby immediately while their profile loads
+- touch placement uses `ScreenPointToRay` (touch positions exclude the top-bar inset)
 
 ## Completion checklist
 

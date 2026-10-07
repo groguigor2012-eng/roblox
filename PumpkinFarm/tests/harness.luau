@@ -151,18 +151,26 @@ local serverScriptService = makeNode("ServerScriptService", "ServerScriptService
 local serverStorage = makeNode("ServerStorage", "ServerStorage", nil, root)
 mount(makeNode("Shared", "Folder", nil, replicatedStorage), "src/shared")
 mount(makeNode("Server", "Folder", nil, serverScriptService), "src/server")
+local starterPlayer = makeNode("StarterPlayer", "StarterPlayer", nil, root)
+local starterPlayerScripts = makeNode("StarterPlayerScripts", "StarterPlayerScripts", nil, starterPlayer)
+mount(makeNode("Client", "Folder", nil, starterPlayerScripts), "src/client")
 
 local clockOffset = 0
+
+-- A real (emulated) DataModel supplies the services that scripts parent Instances to.
+local engine = roblox.Instance.new("DataModel")
+roblox.implementMethod("Workspace", "GetServerTimeNow", function()
+	return os.clock() + clockOffset
+end)
+roblox.implementMethod("SoundService", "PlayLocalSound", function() end)
+
 local services = {
 	ReplicatedStorage = replicatedStorage,
 	ServerScriptService = serverScriptService,
 	ServerStorage = serverStorage,
-	Workspace = {
-		GetServerTimeNow = function()
-			return os.clock() + clockOffset
-		end,
-		Gravity = 196.2,
-	},
+	Workspace = engine:GetService("Workspace"),
+	Lighting = engine:GetService("Lighting"),
+	SoundService = engine:GetService("SoundService"),
 	RunService = {
 		IsStudio = function()
 			return true
@@ -181,6 +189,7 @@ local services = {
 		end,
 	},
 	Players = { PlayerRemoving = fakeSignal(), PlayerAdded = fakeSignal() },
+	StarterPlayer = starterPlayer,
 	DataStoreService = {},
 	PhysicsService = {},
 	Debris = { AddItem = function() end },
@@ -256,6 +265,10 @@ local function requireNode(node)
 		UDim = roblox.UDim,
 		UDim2 = roblox.UDim2,
 		Enum = roblox.Enum,
+		-- Query parameter objects are plain data holders outside the engine.
+		RaycastParams = { new = function() return {} end },
+		TweenInfo = { new = function() return {} end },
+		OverlapParams = { new = function() return {} end },
 		warn = function(...)
 			if Harness.ShowWarnings then
 				print("[warn]", ...)
@@ -292,11 +305,104 @@ Harness.ShowWarnings = false
 function Harness.Module(path: string)
 	-- "Shared.Config.CropConfig" / "Server.Systems.WaveComposer"
 	local parts = string.split(path, ".")
-	local node = if parts[1] == "Shared" then replicatedStorage.Shared else serverScriptService.Server
+	local node = if parts[1] == "Shared"
+		then replicatedStorage.Shared
+		elseif parts[1] == "Client" then starterPlayerScripts.Client
+		else serverScriptService.Server
 	for index = 2, #parts do
 		node = node[parts[index]]
 	end
 	return requireNode(node)
+end
+
+function Harness.SetService(name: string, value: any)
+	services[name] = value
+end
+
+-- Lune emulates Instances with full property/type validation but lacks a few engine
+-- methods. These shims implement them closely enough for builder tests.
+local shimsInstalled = false
+function Harness.InstallEngineShims()
+	if shimsInstalled then
+		return
+	end
+	shimsInstalled = true
+	local function pivotOf(model)
+		if model.PrimaryPart then
+			return model.PrimaryPart.CFrame
+		end
+		for _, descendant in model:GetDescendants() do
+			if descendant:IsA("BasePart") then
+				return descendant.CFrame
+			end
+		end
+		return roblox.CFrame.new()
+	end
+	roblox.implementMethod("Model", "GetPivot", pivotOf)
+	roblox.implementMethod("Model", "PivotTo", function(model, target)
+		local delta = target * pivotOf(model):Inverse()
+		for _, descendant in model:GetDescendants() do
+			if descendant:IsA("BasePart") then
+				descendant.CFrame = delta * descendant.CFrame
+			end
+		end
+	end)
+	roblox.implementMethod("Model", "GetExtentsSize", function(model)
+		local min, max = nil, nil
+		for _, descendant in model:GetDescendants() do
+			if descendant:IsA("BasePart") then
+				local half = descendant.Size / 2
+				-- Lune stores CFrame only; the derived Position property is unreadable.
+				local position = descendant.CFrame.Position
+				min = if min then min:Min(position - half) else position - half
+				max = if max then max:Max(position + half) else position + half
+			end
+		end
+		return if min then max - min else roblox.Vector3.zero
+	end)
+	roblox.implementMethod("Model", "ScaleTo", function() end)
+	local signalStub = { Connect = function() return { Disconnect = function() end } end }
+	roblox.implementProperty("ProximityPrompt", "Triggered", function()
+		return signalStub
+	end)
+	roblox.implementProperty("Humanoid", "Died", function()
+		return signalStub
+	end)
+	for _, event in { "Activated", "MouseEnter", "MouseLeave" } do
+		roblox.implementProperty("GuiButton", event, function()
+			return signalStub
+		end)
+	end
+end
+
+Harness.InstallEngineShims()
+
+-- A LocalPlayer for client-side tests: attributes plus a real PlayerGui container.
+function Harness.CreateLocalPlayer(): any
+	local playerGui = roblox.Instance.new("PlayerGui")
+	local attributes = {}
+	local player = {
+		Name = "Tester",
+		DisplayName = "Tester",
+		UserId = 1,
+		Character = nil,
+		PlayerGui = playerGui,
+		CharacterAdded = fakeSignal(),
+	}
+	function player:WaitForChild(name)
+		return if name == "PlayerGui" then playerGui else nil
+	end
+	function player:GetAttribute(key)
+		return attributes[key]
+	end
+	function player:SetAttribute(key, value)
+		attributes[key] = value
+	end
+	function player:GetAttributeChangedSignal()
+		return fakeSignal()
+	end
+	services.Players.LocalPlayer = player
+	return player
 end
 
 function Harness.Service(name: string): any

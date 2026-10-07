@@ -2,7 +2,7 @@
 
 Two layers:
 
-1. **Automated, headless** (`tests/run.sh`): compile, lint, static cross-references and 178 Lune
+1. **Automated, headless** (`tests/run.sh`): compile, lint, static cross-references and 221 Lune
    specs. Run it before every commit.
 2. **Studio test plan** (below): the engine-dependent behaviour (physics, pathfinding, UI,
    replication, multiple clients). Grouped by engineering phase.
@@ -14,11 +14,13 @@ Two layers:
 | `tests/compile_check.luau` | Lune's Luau compiler | every one of the 123 files parses and compiles |
 | `selene src` | selene + `pumpkinfarm.yml` (Roblox globals) | no undefined or unused variables, no shadowed globals |
 | `tests/static_check.py` | python3 | every `require` resolves; every `Services.X:Method` / `Controllers.X:Method` exists; every remote used is declared with the right direction; every client→server remote has exactly one server handler; every effect the server emits has a client renderer |
-| `tests/run.luau` | Lune + `tests/harness.luau` | the specs below |
+| `tests/run.luau` | Lune + `tests/harness.luau` | the specs below. The harness maps the Rojo tree onto a fake Instance hierarchy so production modules load unmodified; Workspace, Lighting, SoundService and PlayerGui are emulated Instances with small shims for engine methods Lune lacks (`Model:PivotTo/GetPivot/GetExtentsSize`, GUI and prompt events). |
 
 | Spec | Covers |
 |---|---|
 | `load_spec` | all 102 shared/server modules load (top-level code, require graph, frozen configs) |
+| `builders_spec` | every procedural model (7 enemies, 5 crops × 4 stages, 4 defenses, 2 weapons, core, chest, door, 2 costumes), lighting, the lobby and the full arena layout, built through Lune's Instance emulation, which rejects unknown properties and wrongly typed values like the engine. Also the `Crop` class (all growth stages, thorns, regeneration, Anchored) and `Barricade`/`Sentry` (pathfinding modifier, collision group, upgrades, repair, depletion). |
+| `client_spec` | the whole client UI: every controller's `Init` in bootstrap order, all 13 ScreenGuis (`ResetOnSpawn = false`), and the data-driven panels (wardrobe, seed shop, pouch, chest, defenses, banners, toasts) rendered from sample state, including empty and locked states |
 | `utilities_spec` | Janitor ordering, keyed tasks, late adds, detach; Signal isolation; StateMachine legality and nested transitions; TokenBucket; Reconcile never overwrites; payload validation (NaN, inf, huge vectors, extra args, patterns, enums); deterministic weighted random; ballistic maths |
 | `config_spec` | cross-config integrity (seeds↔crops, enemies↔AI modules, classes↔weapons↔abilities, effects), crop profitability, required values from the brief (Staff 35/12/1.2, Scythe 75/10/1.5, stun 2 s non-stacking), every client→server remote has a schema and rate limit, server→client remotes are events |
 | `difficulty_spec` | 1.2× health growth per wave, soft and hard caps, damped speed, monotonic curves, weighted Continue factors, per-enemy scaling, boss index, counts and pacing |

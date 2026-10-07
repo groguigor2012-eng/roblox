@@ -84,8 +84,9 @@ PumpkinFarm/tests/run.sh
 ```
 Needs [Lune](https://lune-org.github.io) (and optionally [selene](https://github.com/Kampfkarren/selene)). It
 compiles all 123 source files, lints them, cross-checks every service call, `require`, remote and
-effect name, and runs 178 headless specs: difficulty curves, wave composition, seed shop stock and
+effect name, and runs 221 headless specs: difficulty curves, wave composition, seed shop stock and
 races, Harvest Chest payouts, profile session locking and migrations, the Mole's underground A*
-router, rate limiting, purchase atomicity, and escape double-payout protection.
+router, rate limiting, purchase atomicity, escape double-payout protection, every procedural model
+and map, and the whole client UI (Lune validates every Instance property name and type).
 
 Engine behaviour (physics, pathfinding, UI) can only be exercised in Studio; follow docs/TESTING.md.

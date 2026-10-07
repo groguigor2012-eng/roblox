@@ -199,22 +199,25 @@ end
 
 -- Placement ------------------------------------------------------------------------------
 
-local function screenPoint(input: InputObject?): Vector2
-	if input and (input.UserInputType == Enum.UserInputType.Touch) then
-		return Vector2.new(input.Position.X, input.Position.Y)
+-- Returns the camera ray under the pointer. Touch positions are GUI coordinates
+-- (below the top-bar inset) and use ScreenPointToRay; the mouse location includes the
+-- inset and pairs with ViewportPointToRay.
+local function pointerRay(input: InputObject?): Ray
+	local camera = Workspace.CurrentCamera
+	if input and input.UserInputType == Enum.UserInputType.Touch then
+		return camera:ScreenPointToRay(input.Position.X, input.Position.Y)
 	end
-	return UserInputService:GetMouseLocation()
+	local mouse = UserInputService:GetMouseLocation()
+	return camera:ViewportPointToRay(mouse.X, mouse.Y)
 end
 
-local function groundPointAt(point: Vector2): Vector3?
+local function groundPointAt(ray: Ray): Vector3?
 	local folder = ClientState.MatchFolder
 	local map = folder and folder:FindFirstChild("Map")
 	local ground = map and map:FindFirstChild("Ground")
 	if ground == nil then
 		return nil
 	end
-	local camera = Workspace.CurrentCamera
-	local ray = camera:ViewportPointToRay(point.X, point.Y)
 	local params = RaycastParams.new()
 	params.FilterType = Enum.RaycastFilterType.Include
 	params.FilterDescendantsInstances = { ground }
@@ -240,7 +243,7 @@ local function updateGhost(input: InputObject?)
 	if definition == nil or ghost == nil then
 		return
 	end
-	local point = groundPointAt(screenPoint(input))
+	local point = groundPointAt(pointerRay(input))
 	if point == nil then
 		return
 	end
