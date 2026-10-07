@@ -55,3 +55,11 @@ These run outside Roblox. They build every room layout and every border style an
 - zero-size parts and parts that spill outside their chunk
 - z-fighting (two overlapping faces in the same plane)
 - that every chunk within 20 of the spawn can be reached
+
+---
+
+## Also in this repository
+
+**[PumpkinFarm/](PumpkinFarm/README.md): Protect the Pumpkin Farm.** A Halloween co-op
+wave-defense, farming and extraction game with a server-authoritative Luau architecture. It is a
+separate Rojo project (`PumpkinFarm/default.project.json`) with its own docs and tests.
