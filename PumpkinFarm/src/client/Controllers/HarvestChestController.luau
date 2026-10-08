@@ -142,8 +142,14 @@ function HarvestChestController:Refresh()
 			Parent = row,
 		})
 	end
+	local capacity = chest.Capacity
+	local capacityText = ""
+	if capacity then
+		local full = capacity.Items >= capacity.MaxItems
+		capacityText = `   📦 {capacity.Items}/{capacity.MaxItems}{if full then ' <font color="#FF6E6E">FULL</font>' else ""}`
+	end
 	ui.Summary.Text = table.concat({
-		`Total value: <b>{Format.Commas(chest.TotalValue)}</b>`,
+		`Total value: <b>{Format.Commas(chest.TotalValue)}</b>{capacityText}`,
 		`Risk bonus: +{Format.Percent(chest.RiskBonus)} (each Continue adds more)`,
 		`<font color="#FF6EBE">Escape now for {Format.Commas(chest.EstimatedCandies)} 🍬 Candies</font>`,
 	}, "\n")

@@ -87,7 +87,8 @@ end
 function RewardService:OnBossKilled(match: any, _boss: any)
 	local reward = EconomyConfig.BossChestReward
 	local value = reward.BaseValue + reward.ValuePerContinue * match.ContinueLevel
-	Services.HarvestChestService:Deposit(match, reward.ItemId, reward.DisplayName, reward.Icon, 1, value)
+	-- Forced: a boss kill is never lost to a full chest.
+	Services.HarvestChestService:Deposit(match, reward.ItemId, reward.DisplayName, reward.Icon, 1, value, true)
 	for player, session in match.Sessions do
 		Services.CurrencyService:Grant(player, CurrencyId.MatchCoins, EconomyConfig.MatchCoins.BossKill, "BossKill")
 		session.MatchStats.BossesDefeated += 1
@@ -114,7 +115,7 @@ function RewardService:OnStolenCropRecovered(match: any, crop: any)
 		return
 	end
 	local definition = crop.Definition
-	Services.HarvestChestService:Deposit(
+	local deposited = Services.HarvestChestService:Deposit(
 		match,
 		definition.Id,
 		definition.DisplayName,
@@ -122,7 +123,11 @@ function RewardService:OnStolenCropRecovered(match: any, crop: any)
 		definition.YieldQuantity,
 		definition.UnitValue
 	)
-	match:Notify(`Recovered a stolen {definition.DisplayName}!`, "Success")
+	if deposited then
+		match:Notify(`Recovered a stolen {definition.DisplayName}!`, "Success")
+	else
+		match:Notify(`Recovered a stolen {definition.DisplayName}, but the chest is full!`, "Warning")
+	end
 end
 
 function RewardService:CommitMatchStats(session: any, match: any, escaped: boolean)

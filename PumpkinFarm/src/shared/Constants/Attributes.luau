@@ -17,6 +17,7 @@
 	Written on enemy models (by EnemyBase): EnemyUid, EnemyId, Health, MaxHealth, Underground
 	Written on defense models (by Barricade / Sentry): DefenseUid, DefenseId, Health, MaxHealth, Level
 	Written on plot slot parts (by MapBuilder): PlotId, SlotIndex
+	Written on plot and slot parts (by CropService): PlotOwnerId (UserId, 0 = shared), PlotOwnerName
 	Written on map parts (by MapBuilder, read by UndergroundRouter): Diggable, NoDig
 ]]
 
@@ -68,6 +69,8 @@ return table.freeze({
 	Level = "Level",
 	PlotId = "PlotId",
 	SlotIndex = "SlotIndex",
+	PlotOwnerId = "PlotOwnerId",
+	PlotOwnerName = "PlotOwnerName",
 	Diggable = "Diggable",
 	NoDig = "NoDig",
 	WeaponId = "WeaponId",

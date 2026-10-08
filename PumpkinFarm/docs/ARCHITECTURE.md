@@ -78,8 +78,8 @@ uses exists, and needs no binary assets. The ScreenGui names match the brief.
 | `Matches` | Folder | Workspace | — | Match.new | ClientState |
 | `Match_<id>` | Folder | Workspace.Matches | MatchId, State, Wave, IsBossWave, EnemiesRemaining, PhaseEndsAt, ContinueLevel, DifficultyMultiplier, CoreHealth, CoreMaxHealth, ChestValue, Objective, BossActive, BossName, BossHealth, BossMaxHealth, BossAuraRadius, BossEnraged | Match / WaveService / FarmCore / HarvestChestService / CursedHarvester | HUD, WaveUI, BossBar, EscapeUI |
 | `Match_<id>.Map.Ground` | Folder | Map | floor/soil/plots (`Diggable = true`), rocks / foundation / chest pad (`NoDig = true`) | MapBuilder | UndergroundRouter, DefenseService, PlagueCrow, BlightedScarecrow |
-| `Map.Ground.Plot<n>` | Part | Ground | `Diggable`, `PlotId` | MapBuilder | CropService (via layout), DefenseService |
-| `Map.Props.Slot<n>` | Part | Props | `PlotId`, `SlotIndex` | MapBuilder | CropController (local Plant prompts) |
+| `Map.Ground.Plot<n>` | Part | Ground | `Diggable`, `PlotId`, `PlotOwnerId` (0 = shared), `PlotOwnerName` | MapBuilder; owner by CropService | CropService (via layout), DefenseService, CropController (plot signs) |
+| `Map.Props.Slot<n>` | Part | Props | `PlotId`, `SlotIndex`, `PlotOwnerId`, `PlotOwnerName` | MapBuilder; owner by CropService | CropController (local Plant prompts, only on own or shared plots) |
 | `Match_<id>.GreatPumpkin` | Model | match folder | — | FarmCore | TargetSelector (object), DefenseShopController (placement hint) |
 | `Match_<id>.HarvestChest` | Model | match folder | `Base.ChestPrompt` with `OpensUI = "HarvestUI"` | HarvestChestService | client Panels |
 | `Match_<id>.EscapeDoor` | Model | match folder | `Portal.EscapeAnchor.EscapePrompt`, `Portal.ContinueAnchor.ContinuePrompt` | EscapeDoor | EscapeService |

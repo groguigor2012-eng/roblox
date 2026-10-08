@@ -96,6 +96,28 @@ local function profile(sim, player)
 	return sim:Service("DataService"):GetData(player)
 end
 
+-- The plot CropService assigned to `player` (players own one plot each; the rest are shared).
+local function ownPlot(sim, player)
+	local match = matchOf(sim, player)
+	local crops = sim:Service("CropService")
+	for _, plotId in match.Arena.PlotOrder do
+		if crops:GetPlotOwner(match, plotId) == player then
+			return match.Arena.Plots[plotId]
+		end
+	end
+	return nil
+end
+
+local function sharedPlot(sim, match)
+	local crops = sim:Service("CropService")
+	for _, plotId in match.Arena.PlotOrder do
+		if crops:GetPlotOwner(match, plotId) == nil then
+			return match.Arena.Plots[plotId]
+		end
+	end
+	return nil
+end
+
 local function waitForState(sim, player, wanted, timeout, onFrame)
 	return sim:RunUntil(function()
 		return state(sim, player) == wanted
@@ -189,7 +211,8 @@ scenario("solo: lobby -> shop -> plant -> build -> 5 waves -> harvest -> escape 
 	check(sim:Invoke(alice, "RequestBuySeed", entry.SeedId, shop.Version - 1).Code == "StockChanged", "stale version rejected")
 
 	-- Planting (3 seeds: 3 starter star-fruit + the bought one)
-	local plot = match.Arena.Plots[match.Arena.PlotOrder[1]]
+	local plot = ownPlot(sim, alice)
+	check(plot and plot.Part:GetAttribute("PlotOwnerId") == alice.UserId, "alice owns a plot")
 	standNear(sim, alice, plot.Slots[1].Position)
 	sim:Run(0.2)
 	local planted = 0
@@ -197,6 +220,7 @@ scenario("solo: lobby -> shop -> plant -> build -> 5 waves -> harvest -> escape 
 		local result = sim:Invoke(alice, "RequestPlant", plot.Id, index, "NeonStarFruit")
 		check(result.Ok, "plant: " .. tostring(result.Code))
 		planted += 1
+		sim:Run(0.6) -- planting cooldown
 	end
 	check(sim:Invoke(alice, "RequestPlant", plot.Id, 1, "NeonStarFruit").Code == "Occupied", "occupied slot rejected")
 	standNear(sim, alice, plot.Slots[1].Position + Vector3.new(80, 0, 0))
@@ -281,10 +305,11 @@ scenario("duo: every enemy type, stun, slow, theft, boss, continue, loss and cle
 	check(matchOf(sim, cara) == match, "same match")
 
 	-- Plant something for crows and moles to target.
-	local plot = match.Arena.Plots[match.Arena.PlotOrder[2]]
+	local plot = ownPlot(sim, bob)
 	standNear(sim, bob, plot.Slots[1].Position)
 	for index = 1, 3 do
 		check(sim:Invoke(bob, "RequestPlant", plot.Id, index, "NeonStarFruit").Ok, "plant")
+		sim:Run(0.6)
 	end
 
 	-- Jump to a wave with specialists and spawn each archetype near the farm.
@@ -381,6 +406,8 @@ scenario("duo: every enemy type, stun, slow, theft, boss, continue, loss and cle
 	check(sim:Invoke(cara, "RequestEscape").Ok, "cara escapes")
 	check(profile(sim, cara).Candies > caraCandies, "cara paid")
 	check(waitForState(sim, bob, "ContinuePreparation", 5), "continue preparation")
+	local remaining = match.Folder:GetAttribute("PhaseEndsAt") - sim.Workspace:GetServerTimeNow()
+	check(remaining > 28 and remaining <= 30.5, "30-second preparation countdown replicated: " .. tostring(remaining))
 	check(match.ContinueLevel == 1 and match.Folder:GetAttribute("DifficultyMultiplier") == 1.5, "danger level I")
 
 	-- Bob stops fighting; the farm falls.
@@ -400,6 +427,161 @@ scenario("duo: every enemy type, stun, slow, theft, boss, continue, loss and cle
 		return #sim:Service("MatchService"):GetMatches() == 0
 	end, 20), "match destroyed after the loss")
 	check(enemyService:GetAliveCount(match) == 0, "no enemies left registered")
+end)
+
+scenario("farm rules: plot ownership, cooldown, stock exhaustion, duplicates, chest capacity, leaving", function(sim)
+	sim:Boot()
+	local eve = sim:AddPlayer("Eve")
+	local finn = sim:AddPlayer("Finn")
+	sim:Run(2)
+	check(sim:Invoke(eve, "RequestJoinQueue").Ok and sim:Invoke(finn, "RequestJoinQueue").Ok, "both queue")
+	check(waitForState(sim, eve, "Intermission", 30), "intermission")
+	local match = matchOf(sim, eve)
+	local crops = sim:Service("CropService")
+	local chestService = sim:Service("HarvestChestService")
+	match:SetPhaseDuration(600) -- a long intermission: everything below happens with the shop open
+
+	-- Plot ownership is assigned and replicated.
+	local evePlot, finnPlot, shared = ownPlot(sim, eve), ownPlot(sim, finn), sharedPlot(sim, match)
+	check(evePlot and finnPlot and shared and evePlot ~= finnPlot, "one plot each, others shared")
+	check(evePlot.Part:GetAttribute("PlotOwnerId") == eve.UserId and evePlot.Slots[1].Part:GetAttribute("PlotOwnerName") == eve.DisplayName, "owner replicated on plot and slots")
+	check(shared.Part:GetAttribute("PlotOwnerId") == 0, "shared plot replicated as 0")
+
+	-- Planting rules. RequestPlant is rate limited (6 burst, 3/s), so space the checks out.
+	local function plantAs(player, ...)
+		sim:Run(0.35)
+		return sim:Invoke(player, "RequestPlant", ...)
+	end
+	local seedsBefore = profile(sim, eve).Seeds.NeonStarFruit
+	standNear(sim, eve, finnPlot.Slots[1].Position)
+	check(plantAs(eve, finnPlot.Id, 1, "NeonStarFruit").Code == "NotYourPlot", "cannot plant on another player's plot")
+	check(profile(sim, eve).Seeds.NeonStarFruit == seedsBefore, "rejected plant consumed no seed")
+	standNear(sim, eve, evePlot.Slots[1].Position)
+	check(plantAs(eve, evePlot.Id, 1, "NeonStarFruit").Ok, "plant on own plot")
+	check(sim:Invoke(eve, "RequestPlant", evePlot.Id, 2, "NeonStarFruit").Code == "Cooldown", "planting cooldown")
+	check(profile(sim, eve).Seeds.NeonStarFruit == seedsBefore - 1, "cooldown rejection consumed no seed")
+	sim:Run(0.6)
+	check(plantAs(eve, evePlot.Id, 1, "NeonStarFruit").Code == "Occupied", "occupied slot")
+	check(plantAs(eve, "Plot99", 1, "NeonStarFruit").Code == "NotFound", "unknown plot")
+	check(plantAs(eve, evePlot.Id, 64, "NeonStarFruit").Code == "NotFound", "unknown slot")
+	check(plantAs(eve, evePlot.Id, 2, "NotASeed").Code == "NotFound", "unknown seed")
+	local unowned = plantAs(eve, evePlot.Id, 2, "VoidPumpkin").Code
+	check(unowned == "NotOwned", "unowned seed: " .. tostring(unowned))
+	check(plantAs(eve, evePlot.Id, "2", "NeonStarFruit").Code == "InvalidPayload", "malformed slot index")
+	check(plantAs(eve, evePlot.Id, 0 / 0, "NeonStarFruit").Code == "InvalidPayload", "NaN slot index")
+	standNear(sim, eve, shared.Slots[1].Position)
+	check(plantAs(eve, shared.Id, 1, "NeonStarFruit").Ok, "anyone may plant on a shared plot")
+
+	-- Growth stages advance on the server.
+	local crop = crops:GetCrops(match)[1]
+	local stage0 = crop.Model:GetAttribute("Stage")
+	sim:Run(20)
+	check(crop.Model:GetAttribute("Growth") > 0, "growth replicated")
+	crops:ForceRipenAll(match)
+	check(crop:IsRipe() and crop.Model:GetAttribute("Ripe") == true and crop.Model:GetAttribute("Stage") ~= stage0, "ripe at the final stage")
+
+	-- Teammates harvest each other's crops into the shared chest, exactly once.
+	local eveCrop
+	for _, candidate in crops:GetCrops(match) do
+		if candidate.PlotId == evePlot.Id then
+			eveCrop = candidate
+		end
+	end
+	standNear(sim, finn, eveCrop:GetPosition())
+	local harvest = sim:Invoke(finn, "RequestHarvest", eveCrop.Uid)
+	check(harvest.Ok, "teammate harvest: " .. tostring(harvest.Code))
+	check(sim:Invoke(finn, "RequestHarvest", eveCrop.Uid).Code == "NotFound", "duplicate harvest rejected")
+	local snapshot = chestService:GetSnapshot(match)
+	check(snapshot.Capacity.Items == eveCrop.Definition.YieldQuantity, "deposited exactly once")
+	check(sim:LastEvent(eve, "ChestUpdated")[1].TotalValue == snapshot.TotalValue, "chest UI synchronised to teammates")
+	check(match.Folder:GetAttribute("ChestValue") == snapshot.TotalValue, "chest value attribute")
+
+	-- A full chest refuses the harvest and the crop survives.
+	local capacity = snapshot.Capacity
+	check(chestService:Deposit(match, "Filler", "Filler", "x", capacity.MaxItems - capacity.Items, 0), "fill the chest")
+	local sharedCrop
+	for _, candidate in crops:GetCrops(match) do
+		if candidate.PlotId == shared.Id then
+			sharedCrop = candidate
+		end
+	end
+	standNear(sim, eve, sharedCrop:GetPosition())
+	check(sim:Invoke(eve, "RequestHarvest", sharedCrop.Uid).Code == "ChestFull", "full chest refuses")
+	check(crops:GetCrop(match, sharedCrop.Uid) == sharedCrop and sharedCrop:IsAlive(), "crop not lost")
+
+	-- Seed stock is server-owned: two players buying the same seed until it runs out.
+	sim:Chat(eve, "/pf candies 100000")
+	sim:Chat(finn, "/pf candies 100000")
+	local shop = sim:LastEvent(eve, "ShopUpdated")[1]
+	local entry = shop.Entries[1]
+	local startCandies = { [eve] = profile(sim, eve).Candies, [finn] = profile(sim, finn).Candies }
+	local startSeeds = { [eve] = profile(sim, eve).Seeds[entry.SeedId] or 0, [finn] = profile(sim, finn).Seeds[entry.SeedId] or 0 }
+	local bought = { [eve] = 0, [finn] = 0 }
+	local codes = {}
+	for _ = 1, entry.Quantity + 4 do
+		for _, player in { eve, finn } do
+			local result = sim:Invoke(player, "RequestBuySeed", entry.SeedId, shop.Version)
+			if result.Ok then
+				bought[player] += 1
+			else
+				codes[result.Code] = true
+			end
+			sim:Run(0.5) -- stay under the rate limit
+		end
+	end
+	check(bought[eve] + bought[finn] == entry.Quantity, "sold exactly the stock: " .. (bought[eve] + bought[finn]) .. "/" .. entry.Quantity)
+	check(codes.OutOfStock or codes.PurchaseLimit, "exhaustion reported")
+	for _, player in { eve, finn } do
+		check(profile(sim, player).Candies == startCandies[player] - bought[player] * entry.Price, "charged once per seed")
+		check((profile(sim, player).Seeds[entry.SeedId] or 0) == startSeeds[player] + bought[player], "seed inventory updated")
+	end
+	local latest = sim:LastEvent(finn, "ShopUpdated")[1]
+	for _, item in latest.Entries do
+		if item.SeedId == entry.SeedId then
+			check(item.Quantity == 0, "stock decrement replicated")
+		end
+	end
+	local stale = sim:Invoke(eve, "RequestBuySeed", entry.SeedId, shop.Version - 1).Code
+	check(stale == "StockChanged", "stale shop version: " .. tostring(stale))
+	check(sim:Invoke(eve, "RequestBuySeed", 42, shop.Version).Code == "InvalidPayload", "malformed seed id")
+	local limited = 0
+	for _ = 1, 10 do
+		if sim:Invoke(eve, "RequestBuySeed", entry.SeedId, shop.Version).Code == "RateLimited" then
+			limited += 1
+		end
+	end
+	check(limited > 0, "spam is rate limited")
+
+	-- The shop closes during waves.
+	sim:Run(5)
+	sim:Chat(eve, "/pf skip")
+	check(waitForState(sim, eve, "WaveActive", 15), "wave starts")
+	local other = latest.Entries[#latest.Entries]
+	check(sim:Invoke(eve, "RequestBuySeed", other.SeedId, sim:LastEvent(eve, "ShopUpdated")[1].Version).Code == "InvalidState", "shop closed during the wave")
+
+	-- Leaving releases the plot to everyone.
+	sim:RemovePlayer(finn)
+	sim:Run(1)
+	check(crops:GetPlotOwner(match, finnPlot.Id) == nil, "finn's plot released")
+	check(finnPlot.Part:GetAttribute("PlotOwnerId") == 0, "release replicated")
+	check(crops:CanPlantOn(match, eve, finnPlot.Id), "eve may now plant there")
+end)
+
+scenario("server reset: shutdown mid-match never pays the chest or persists match state", function(sim)
+	sim:Boot()
+	local gil = sim:AddPlayer("Gil")
+	sim:Run(2)
+	check(sim:Invoke(gil, "RequestJoinQueue").Ok, "queue")
+	check(waitForState(sim, gil, "Intermission", 30), "intermission")
+	local match = matchOf(sim, gil)
+	local candies = profile(sim, gil).Candies
+	sim:Service("HarvestChestService"):Deposit(match, "VoidPumpkin", "Void Pumpkin", "x", 2, 600)
+	sim:Chat(gil, "/pf skip")
+	check(waitForState(sim, gil, "WaveActive", 15), "wave running")
+	sim:Shutdown()
+	local data = profile(sim, gil)
+	check(data == nil or data.Candies == candies, "chest value is not converted by a shutdown")
+	check(data == nil or data.MatchCoins == nil, "match coins never enter the profile")
 end)
 
 scenario("disconnects: leaving mid-wave ends an abandoned match and releases everything", function(sim)

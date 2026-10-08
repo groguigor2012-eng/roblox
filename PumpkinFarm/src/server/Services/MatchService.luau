@@ -15,7 +15,7 @@
 	else in the match code assumes the lobby lives in the same server.
 
 	Dependencies: Match, MatchConfig, LifeState; Registry: PlayerService, CleanupService,
-	              RewardService, MatchCoinService, WeaponService, StatusEffectService,
+	              RewardService, MatchCoinService, WeaponService, StatusEffectService, CropService,
 	              and every service in MATCH_SERVICES
 
 	API:
@@ -152,6 +152,7 @@ end
 
 -- Strips match-only state from a session (coins, weapon, effects, accessories).
 local function detach(session: any, match: any)
+	Services.CropService:ReleasePlots(match, session.Player)
 	match:DetachSession(session)
 	Services.MatchCoinService:Clear(session.Player)
 	Services.WeaponService:UnequipWeapon(session)

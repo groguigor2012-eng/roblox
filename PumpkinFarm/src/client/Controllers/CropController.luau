@@ -5,7 +5,9 @@
 
 	Farm interaction on the client:
 		* one local ProximityPrompt per empty plot slot: "Plant <seed>" (enabled only
-		  when a seed is selected in the pouch and the slot is free)
+		  when a seed is selected in the pouch, the slot is free and the plot is the
+		  player's own or shared - PlotOwnerId attribute)
+		* a sign above each plot: "Your plot" / "<name>'s plot" / "Shared plot"
 		* one local ProximityPrompt per ripe crop: "Harvest"
 		* a billboard above each crop: name, growth bar or READY!, health when damaged
 	Prompts only express intent (RequestPlant / RequestHarvest); the server validates
@@ -17,6 +19,7 @@
 	API: none (self-contained)
 ]]
 
+local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Shared = ReplicatedStorage.Shared
@@ -38,6 +41,23 @@ local CropController = {}
 local matchJanitor = Janitor.new()
 local slotPrompts: { [string]: ProximityPrompt } = {} -- key "Plot1:3"
 local occupied: { [string]: boolean } = {}
+local localPlayer = Players.LocalPlayer
+
+-- 0 / nil = shared plot.
+local function canPlantOn(part: Instance): boolean
+	local ownerId = part:GetAttribute(Attributes.PlotOwnerId)
+	return ownerId == nil or ownerId == 0 or ownerId == localPlayer.UserId
+end
+
+local function ownerLabel(part: Instance): string
+	local ownerId = part:GetAttribute(Attributes.PlotOwnerId)
+	if ownerId == nil or ownerId == 0 then
+		return "🌾 Shared plot"
+	elseif ownerId == localPlayer.UserId then
+		return "🏡 Your plot"
+	end
+	return `🔒 {part:GetAttribute(Attributes.PlotOwnerName) or "Another farmer"}'s plot`
+end
 
 local function slotKey(plotId: any, slotIndex: any): string
 	return `{plotId}:{slotIndex}`
@@ -48,7 +68,10 @@ local function refreshSlotPrompts()
 	local definition = seedId and CropConfig.Get(seedId)
 	for key, prompt in slotPrompts do
 		local free = not occupied[key]
-		prompt.Enabled = free and definition ~= nil
+		local part = prompt.Parent
+		local allowed = part ~= nil and canPlantOn(part)
+		prompt.Enabled = free and allowed and definition ~= nil
+		prompt.ObjectText = if part then ownerLabel(part) else "Empty plot"
 		if definition then
 			prompt.ActionText = `Plant {definition.DisplayName}`
 		end
@@ -93,7 +116,31 @@ local function bindSlot(part: BasePart)
 	matchJanitor:Connect(prompt.Triggered, function()
 		plant(prompt)
 	end)
+	matchJanitor:Connect(part:GetAttributeChangedSignal(Attributes.PlotOwnerId), refreshSlotPrompts)
 	slotPrompts[slotKey(plotId, slotIndex)] = prompt
+end
+
+local function bindPlotSign(part: BasePart)
+	local billboard = UIKit.Create("BillboardGui", {
+		Name = "PlotSign",
+		Size = UDim2.fromOffset(160, 26),
+		StudsOffset = Vector3.new(0, 4, 0),
+		MaxDistance = 90,
+		Adornee = part,
+		Parent = part,
+	})
+	matchJanitor:Add(billboard)
+	local label = UIKit.Label({
+		Size = UDim2.fromScale(1, 1),
+		MaxTextSize = 16,
+		Parent = billboard,
+	})
+	local function update()
+		label.Text = ownerLabel(part)
+		label.TextColor3 = if canPlantOn(part) then Palette.Good else Palette.TextDim
+	end
+	matchJanitor:Connect(part:GetAttributeChangedSignal(Attributes.PlotOwnerId), update)
+	update()
 end
 
 local function buildBillboard(model: Model, anchor: BasePart, definition: any): (BillboardGui, any, TextLabel)
@@ -198,6 +245,14 @@ local function bindMatch(folder: Folder?)
 		return
 	end
 	local map = folder:WaitForChild("Map", 20)
+	local ground = map and map:WaitForChild("Ground", 20)
+	if ground then
+		for _, child in ground:GetChildren() do
+			if child:IsA("BasePart") and child:GetAttribute(Attributes.PlotId) and child:GetAttribute(Attributes.SlotIndex) == nil then
+				bindPlotSign(child)
+			end
+		end
+	end
 	local props = map and map:WaitForChild("Props", 20)
 	if props then
 		for _, child in props:GetChildren() do

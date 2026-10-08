@@ -6,7 +6,7 @@ match state machine.
 
 The source is not repeated here. **[PHASE1_SOURCE.md](PHASE1_SOURCE.md)** holds the complete,
 current Luau source of all 55 Phase 1 files (6,500+ lines), each under its exact Studio path. It is
-generated from the repository by `tools/bundle_phase1.py`, so it always matches the code.
+generated from the repository by `tools/bundle_phases.py`, so it always matches the code.
 
 > **Status.** All five phases are already implemented in this repository, and Phase 1 is the
 > foundation they sit on. The Phase 1 files below are the final, tested versions. Advanced enemy
@@ -463,7 +463,7 @@ Rules that keep this safe:
 
 Complete source: **[PHASE1_SOURCE.md](PHASE1_SOURCE.md)**, 55 files grouped as above, each under
 its Studio path and instance class. To regenerate it after a code change, run
-`python3 tools/bundle_phase1.py`.
+`python3 tools/bundle_phases.py`.
 
 ## 16. Create these objects in Studio
 

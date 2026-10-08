@@ -74,6 +74,10 @@ local MatchConfig = {
 		PlotSize = Vector3.new(14, 1, 10),
 		SlotColumns = 3,
 		SlotRows = 2,
+		-- Each player owns this many plots (assigned in join order by UserId); the rest
+		-- are shared. Only the owner may plant on an owned plot; anyone may harvest
+		-- (the chest is the team's). A leaving player's plots become shared.
+		PlotsPerPlayer = 1,
 	},
 
 	Core = {
@@ -93,6 +97,8 @@ local MatchConfig = {
 
 	Interaction = {
 		PlantRange = 14,
+		-- Minimum seconds between two successful plantings by the same player.
+		PlantCooldown = 0.5,
 		HarvestRange = 14,
 		DoorRange = 18,
 	},

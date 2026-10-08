@@ -77,6 +77,9 @@ PumpkinFarm/
 - **[docs/phase1/PHASE1.md](docs/phase1/PHASE1.md)**: the Phase 1 foundation deliverable (hierarchy,
   attributes, bootstraps, remotes, data, dependencies, Studio and verification checklists), with the
   complete Phase 1 source in [PHASE1_SOURCE.md](docs/phase1/PHASE1_SOURCE.md).
+- **[docs/phase2/PHASE2.md](docs/phase2/PHASE2.md)**: farming, economy, Seed Shop, Harvest Chest, match
+  loop, Escape Door, UI and the defense foundation, with test sequences and the full source in
+  [PHASE2_SOURCE.md](docs/phase2/PHASE2_SOURCE.md).
 - **[docs/TESTING.md](docs/TESTING.md)**: automated checks and the Studio test plan (gameplay,
   multiplayer, exploit, failure and cleanup tests), plus debug commands.
 
@@ -87,11 +90,12 @@ PumpkinFarm/tests/run.sh
 ```
 Needs [Lune](https://lune-org.github.io) (and optionally [selene](https://github.com/Kampfkarren/selene)). It
 compiles all 123 source files, lints them, cross-checks every service call, `require`, remote and
-effect name, and runs 221 headless specs: difficulty curves, wave composition, seed shop stock and
+effect name, and runs 223 headless specs: difficulty curves, wave composition, seed shop stock and
 races, Harvest Chest payouts, profile session locking and migrations, the Mole's underground A*
 router, rate limiting, purchase atomicity, escape double-payout protection, every procedural model
 and map, and the whole client UI (Lune validates every Instance property name and type). Finally it runs the
 unmodified server in virtual time with bot players: a full solo loop to escape and payout, a duo
-match with every enemy type, the boss, Continue and a loss, a disconnect, and a balance smoke test.
+match with every enemy type, the boss, Continue and a loss, the farming and shop rules with two
+players, a server shutdown, a disconnect, and a balance smoke test.
 
 Exact engine behaviour (physics, real pathfinding, UI feel) still needs Studio; follow docs/TESTING.md.

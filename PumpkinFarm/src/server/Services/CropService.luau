@@ -7,23 +7,33 @@
 
 	Plant(plotId, slotIndex, seedId):
 		in a match, alive, match not ending -> plot/slot exist in THIS match's farm ->
-		slot empty -> character within PlantRange of the slot -> slot not obstructed by a
-		defense (spatial box query) -> seed owned -> seed consumed atomically -> crop.
+		plot is the player's own or shared -> planting cooldown elapsed -> slot empty ->
+		character within PlantRange of the slot -> slot not obstructed by a defense
+		(spatial box query) -> seed owned -> seed consumed atomically -> crop.
 		Planting is slot-based, so "outside the farm" or "inside an object" positions
 		simply cannot be expressed by a client.
 
 	Harvest(cropUid):
-		crop exists in THIS match -> alive -> ripe -> within HarvestRange -> crop removed
-		BEFORE the reward is paid, so a duplicated request finds nothing to harvest.
+		crop exists in THIS match -> alive -> ripe -> within HarvestRange -> chest has
+		room -> crop removed BEFORE the reward is paid, so a duplicated request finds
+		nothing to harvest.
+
+	Plot ownership: on InitMatch every player gets MatchConfig.Farm.PlotsPerPlayer
+	plots (PlotOrder, players sorted by UserId); the rest are shared. Owners are
+	replicated as PlotOwnerId / PlotOwnerName attributes on the plot and slot parts.
+	ReleasePlots (called when a player leaves the match) makes their plots shared.
 
 	One loop ticks growth for every match (CropConfig.TickInterval).
 
 	Dependencies: Crop, CropConfig, MatchConfig, MatchState, Result, ResultCode, Signal;
-	              Registry: PlayerService, SeedService, UpgradeService, RewardService,
-	              EffectService, RemoteService
+	              Attributes; Registry: PlayerService, SeedService, UpgradeService,
+	              RewardService, EffectService, RemoteService, HarvestChestService
 
 	API:
 		CropService:InitMatch(match) / CleanupMatch(match)
+		CropService:GetPlotOwner(match, plotId) -> Player?
+		CropService:CanPlantOn(match, player, plotId) -> boolean
+		CropService:ReleasePlots(match, player)
 		CropService:Plant(player, plotId, slotIndex, seedId) -> Result
 		CropService:Harvest(player, cropUid) -> Result
 		CropService:GetCrops(match) -> { Crop }
@@ -40,6 +50,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 
 local Shared = ReplicatedStorage.Shared
+local Attributes = require(Shared.Constants.Attributes)
 local CropConfig = require(Shared.Config.CropConfig)
 local LifeState = require(Shared.Constants.LifeState)
 local MatchConfig = require(Shared.Config.MatchConfig)
@@ -56,6 +67,8 @@ type SlotState = { PlotId: string, Index: number, Position: Vector3, Crop: any }
 type MatchCrops = {
 	Slots: { [string]: { [number]: SlotState } },
 	Crops: { [string]: any },
+	Owners: { [string]: Player },
+	NextPlantAt: { [Player]: number },
 }
 
 local CropService = {}
@@ -96,6 +109,24 @@ function CropService:Start()
 	end)
 end
 
+-- Mirrors a plot's owner onto its plot part and slot parts for the client.
+local function replicateOwner(match: any, plotId: string, owner: Player?)
+	local plot = match.Arena.Plots[plotId]
+	if plot == nil then
+		return
+	end
+	local parts = { plot.Part }
+	for _, slot in plot.Slots do
+		table.insert(parts, slot.Part)
+	end
+	for _, part in parts do
+		if part then
+			part:SetAttribute(Attributes.PlotOwnerId, if owner then owner.UserId else 0)
+			part:SetAttribute(Attributes.PlotOwnerName, if owner then owner.DisplayName else "")
+		end
+	end
+end
+
 function CropService:InitMatch(match: any)
 	local slots = {}
 	for plotId, plot in match.Arena.Plots do
@@ -105,7 +136,56 @@ function CropService:InitMatch(match: any)
 		end
 		slots[plotId] = plotSlots
 	end
-	states[match] = { Slots = slots, Crops = {} }
+	local state: MatchCrops = { Slots = slots, Crops = {}, Owners = {}, NextPlantAt = {} }
+	states[match] = state
+
+	-- Deterministic assignment: players sorted by UserId take plots in PlotOrder.
+	local players = {}
+	for _, session in match:GetSessions() do
+		table.insert(players, session.Player)
+	end
+	table.sort(players, function(a, b)
+		return a.UserId < b.UserId
+	end)
+	local perPlayer = MatchConfig.Farm.PlotsPerPlayer
+	local nextPlot = 1
+	for _, player in players do
+		for _ = 1, perPlayer do
+			local plotId = match.Arena.PlotOrder[nextPlot]
+			if plotId == nil then
+				break
+			end
+			state.Owners[plotId] = player
+			nextPlot += 1
+		end
+	end
+	for _, plotId in match.Arena.PlotOrder do
+		replicateOwner(match, plotId, state.Owners[plotId])
+	end
+end
+
+function CropService:GetPlotOwner(match: any, plotId: string): Player?
+	local state = states[match]
+	return state and state.Owners[plotId]
+end
+
+function CropService:CanPlantOn(match: any, player: Player, plotId: string): boolean
+	local owner = self:GetPlotOwner(match, plotId)
+	return owner == nil or owner == player
+end
+
+function CropService:ReleasePlots(match: any, player: Player)
+	local state = states[match]
+	if state == nil then
+		return
+	end
+	state.NextPlantAt[player] = nil
+	for plotId, owner in state.Owners do
+		if owner == player then
+			state.Owners[plotId] = nil
+			replicateOwner(match, plotId, nil)
+		end
+	end
 end
 
 function CropService:CleanupMatch(match: any)
@@ -158,6 +238,13 @@ function CropService:Plant(player: Player, plotId: string, slotIndex: number, se
 	if slot == nil then
 		return Result.Fail(ResultCode.NotFound)
 	end
+	if not self:CanPlantOn(match, player, plotId) then
+		return Result.Fail(ResultCode.NotYourPlot)
+	end
+	local now = os.clock()
+	if now < (state.NextPlantAt[player] or 0) then
+		return Result.Fail(ResultCode.Cooldown)
+	end
 	if slot.Crop ~= nil then
 		return Result.Fail(ResultCode.Occupied)
 	end
@@ -171,6 +258,7 @@ function CropService:Plant(player: Player, plotId: string, slotIndex: number, se
 	if not Services.SeedService:ConsumeSeed(player, seedId) then
 		return Result.Fail(ResultCode.NotOwned)
 	end
+	state.NextPlantAt[player] = now + MatchConfig.Interaction.PlantCooldown
 
 	local growthMultiplier = Services.UpgradeService:GetGrowthSpeedMultiplier(player)
 	local crop = Crop.new(match, definition, slot, player, growthMultiplier, function(depleted)
@@ -198,6 +286,9 @@ function CropService:Harvest(player: Player, cropUid: string)
 	local position = session:GetPosition()
 	if position == nil or (position - crop:GetPosition()).Magnitude > MatchConfig.Interaction.HarvestRange then
 		return Result.Fail(ResultCode.OutOfRange)
+	end
+	if not Services.HarvestChestService:CanDeposit(match, crop.CropId, crop.Definition.YieldQuantity) then
+		return Result.Fail(ResultCode.ChestFull)
 	end
 	-- Remove first: a second request for the same uid now fails with NotFound.
 	self:DestroyCrop(crop, "Harvested")

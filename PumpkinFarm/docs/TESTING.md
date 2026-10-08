@@ -2,7 +2,7 @@
 
 Two layers:
 
-1. **Automated, headless** (`tests/run.sh`): compile, lint, static cross-references, 221 Lune
+1. **Automated, headless** (`tests/run.sh`): compile, lint, static cross-references, 223 Lune
    specs and an end-to-end simulation of the real server running whole matches. Run it before
    every commit.
 2. **Studio test plan** (below): the engine-dependent behaviour (physics, pathfinding, UI,
@@ -50,6 +50,8 @@ dumped on failure):
 |---|---|
 | solo full loop | queue → intermission → buy seeds → plant → build a barricade → waves 1-5 cleared by a bot → harvest into the chest → door → escape → payout equals the chest value exactly once → statistics committed once → match and arena destroyed |
 | duo | two players share a match; every enemy archetype spawned and observed acting (a Mole goes underground, a Witch summons minions, a Scarecrow stuns, a potion slows, crops are stolen or eaten); the Cursed Harvester spawns, the boss HUD shows and clears, its kill deposits a Cursed Core; boss wave 10 → door → one player continues, the other escapes and is paid; 30 s preparation at danger ×1.5; the farm then falls, the loss is recorded and everything is cleaned up |
+| farm rules | plot ownership and its release on leave, planting cooldown, every planting rejection (no seed consumed), growth, teammate harvest, duplicate harvest, full chest keeps the crop, two players buying one seed until the stock runs out (exact stock, charged once), stale version, malformed ids, rate limiting, shop closed during waves |
+| server reset | shutdown mid-wave: BindToClose runs cleanly, the chest is not paid, Match Coins never reach the profile |
 | disconnects | leaving mid-wave ends the match as Abandoned and releases the profile |
 | balance smoke | an unprotected, naive Knight bot defending alone survives at least 3 waves (prints the wave it reached) |
 

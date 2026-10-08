@@ -27,6 +27,9 @@ The skeleton every other system plugs into. Full write-up and source: [phase1/PH
 
 ## Phase 2: World, players, classes, lobby and match lifecycle
 
+The farming, economy, shop, chest and match-loop deliverable (as briefed for Phase 2) is written up
+with its full source in [phase2/PHASE2.md](phase2/PHASE2.md).
+
 | Area | Files |
 |---|---|
 | World | `CollisionGroups`, `ModelFactory`, `MapBuilder` (lobby, arenas, lighting) |

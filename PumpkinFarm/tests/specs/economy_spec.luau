@@ -112,4 +112,37 @@ return function(H)
 		H.eq(chest:ComputePayout(1, 0.5), 0)
 		H.ok(not chest:Deposit("NeonStarFruit", "Neon", "x", 1, 40), "no deposits after forfeit")
 	end)
+
+	H.test("harvest chest capacity: item and stack limits, forced deposits, nothing partial", function()
+		local chest = HarvestChest.new({ MaxItems = 10, MaxStacks = 2 })
+		H.ok(chest:CanDeposit("A", 6))
+		H.ok(chest:Deposit("A", "A", "x", 6, 10))
+		H.ok(chest:Deposit("B", "B", "x", 3, 10))
+		H.ok(not chest:CanDeposit("C", 1), "third stack refused")
+		H.ok(not chest:Deposit("C", "C", "x", 1, 10), "third stack deposit refused")
+		H.ok(chest:CanDeposit("A", 1), "existing stack still accepts")
+		H.ok(not chest:Deposit("A", "A", "x", 2, 10), "would exceed MaxItems: refused whole")
+		H.eq(chest:GetItemCount(), 9, "nothing partially deposited")
+		H.ok(chest:Deposit("A", "A", "x", 1, 10))
+		H.ok(not chest:CanDeposit("A", 1), "full")
+		H.ok(chest:Deposit("Core", "Core", "x", 1, 500, true), "forced deposit ignores capacity")
+		local capacity = chest:GetCapacity()
+		H.eq(capacity.Items, 11)
+		H.eq(capacity.Stacks, 3)
+		H.eq(chest:GetTotalValue(), 600)
+		chest:Forfeit()
+		H.eq(chest:GetCapacity().Items, 0, "forfeit empties")
+		H.ok(not chest:CanDeposit("A", 1), "forfeited chest accepts nothing")
+	end)
+
+	H.test("configured chest capacity holds a long run's harvest", function()
+		local EconomyConfig = H.Module("Shared.Config.EconomyConfig")
+		local CropConfig = H.Module("Shared.Config.CropConfig")
+		H.ok(EconomyConfig.Chest.MaxItems >= 100 and EconomyConfig.Chest.MaxStacks >= 8)
+		local cropTypes = 0
+		for _ in CropConfig.Crops do
+			cropTypes += 1
+		end
+		H.ok(EconomyConfig.Chest.MaxStacks >= cropTypes + 1, "every crop type plus the Cursed Core fits")
+	end)
 end

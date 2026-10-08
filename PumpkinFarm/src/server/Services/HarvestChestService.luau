@@ -15,7 +15,8 @@
 
 	API:
 		HarvestChestService:InitMatch(match) / CleanupMatch(match)
-		HarvestChestService:Deposit(match, itemId, displayName, icon, quantity, unitValue) -> boolean
+		HarvestChestService:CanDeposit(match, itemId, quantity) -> boolean
+		HarvestChestService:Deposit(match, itemId, displayName, icon, quantity, unitValue, force?) -> boolean
 		HarvestChestService:GetTotalValue(match) -> number
 		HarvestChestService:GetRiskBonus(match) -> number
 		HarvestChestService:ComputePayout(match) -> number
@@ -52,7 +53,7 @@ function HarvestChestService:InitMatch(match: any)
 	prompt:SetAttribute("OpensUI", "HarvestUI")
 	prompt.Parent = model.PrimaryPart
 	model.Parent = match.Folder
-	states[match] = { Chest = HarvestChest.new(), Model = model }
+	states[match] = { Chest = HarvestChest.new(EconomyConfig.Chest), Model = model }
 	match:SetAttribute(Attributes.ChestValue, 0)
 end
 
@@ -80,6 +81,7 @@ function HarvestChestService:GetSnapshot(match: any): any
 		EstimatedCandies = self:ComputePayout(match),
 		RiskBonus = self:GetRiskBonus(match),
 		Locked = chest:IsForfeited(),
+		Capacity = chest:GetCapacity(),
 	}
 end
 
@@ -91,12 +93,17 @@ function HarvestChestService:_broadcast(match: any)
 	end
 end
 
-function HarvestChestService:Deposit(match: any, itemId: string, displayName: string, icon: string, quantity: number, unitValue: number): boolean
+function HarvestChestService:CanDeposit(match: any, itemId: string, quantity: number): boolean
+	local state = states[match]
+	return state ~= nil and state.Chest:CanDeposit(itemId, quantity)
+end
+
+function HarvestChestService:Deposit(match: any, itemId: string, displayName: string, icon: string, quantity: number, unitValue: number, force: boolean?): boolean
 	local state = states[match]
 	if state == nil then
 		return false
 	end
-	local ok = state.Chest:Deposit(itemId, displayName, icon, quantity, unitValue)
+	local ok = state.Chest:Deposit(itemId, displayName, icon, quantity, unitValue, force)
 	if ok then
 		self:_broadcast(match)
 	end

@@ -34,6 +34,13 @@ local EconomyConfig = {
 		RiskBonusPerContinue = 0.25,
 	},
 
+	-- Harvest Chest capacity (team-wide). Harvests that would exceed it are refused
+	-- before the crop is removed, so nothing is lost; boss rewards always fit.
+	Chest = {
+		MaxItems = 400, -- total units across all stacks
+		MaxStacks = 16, -- distinct item types
+	},
+
 	-- Defeating the Cursed Harvester deposits a Cursed Core into the Harvest Chest.
 	BossChestReward = {
 		ItemId = "CursedCore",

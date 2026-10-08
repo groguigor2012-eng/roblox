@@ -36,6 +36,8 @@ local ResultCode = {
 	Stunned = "Stunned",
 	MaxLevel = "MaxLevel",
 	QueueFull = "QueueFull",
+	NotYourPlot = "NotYourPlot",
+	ChestFull = "ChestFull",
 }
 
 ResultCode.Messages = {
@@ -66,6 +68,8 @@ ResultCode.Messages = {
 	Stunned = "You're stunned!",
 	MaxLevel = "Already at max level.",
 	QueueFull = "All farms are busy. Try again in a moment.",
+	NotYourPlot = "That plot belongs to another farmer. Plant on yours or a shared plot.",
+	ChestFull = "The Harvest Chest is full! Escape to cash it in.",
 }
 
 table.freeze(ResultCode.Messages)
