@@ -4,18 +4,30 @@
 	Path: ServerScriptService.Server.AI.ZombieMole
 
 	Breacher. Tunnels under the outer defenses and erupts next to the crop it wants.
-	Implemented as an explicit StateMachine:
+	Implemented as an explicit 10-state StateMachine:
 
 		Idle -> SelectingTarget -> EnteringUnderground -> UndergroundTraversal
-		     -> Resurfacing -> AttackingCrop -> Retargeting -> (dig again | walk | attack)
-		AttackingCrop -> Combat (a player interrupted it) -> Retargeting
+		     -> SearchingSurfaceRoute -> Resurfacing -> AttackingCrop
+		     -> Retargeting -> (dig again | walk | attack)
+		SearchingSurfaceRoute -> UndergroundTraversal   (spot blocked: short detour tunnel)
+		SelectingTarget / AttackingCrop -> Interrupted   (a player hit it on the surface)
 		any -> Dying
 
-	Underground navigation is real: UndergroundRouter raycasts the arena's Ground folder
-	into a dig grid (bedrock rocks / foundations are impassable, map bounds enforced) and
-	A* finds a tunnel to a validated resurface point beside the target. While buried the
-	mole's body is hidden and Ghost-collided, a dirt mound tracks it on the surface,
-	melee and sentries cannot hit it, and area magic deals reduced damage.
+	Underground navigation is real, never a teleport:
+	  1. UndergroundRouter raycasts the arena's Ground folder into a dig grid (bedrock
+	     rocks / foundations are impassable, map bounds enforced).
+	  2. A resurface point beside the target is chosen (diggable + clear headroom) and A*
+	     finds a tunnel to it (8-way, no corner cutting, string-pulled).
+	  3. The buried body is driven waypoint by waypoint by a MoverRig (AlignPosition at
+	     floor - DigDepth, speed-capped), so travel takes real time and can be interrupted.
+	  4. On arrival SearchingSurfaceRoute re-validates the exit (raycast soil check,
+	     headroom box query against defenses, props, rocks, the core and the chest). If a
+	     barricade was built there meanwhile it plans a short detour tunnel to another
+	     valid spot; after SurfaceSearchAttempts failures it surfaces where it is.
+	  5. Resurfacing rises vertically at the validated point.
+	While buried the body is hidden and Ghost-collided, a dirt mound tracks it on the
+	surface, melee and sentries cannot hit it, and area magic deals reduced damage.
+	Think rate is per state (EnemyConfig StateUpdateIntervals).
 
 	Dependencies: EnemyBase, Navigator, MoverRig, TargetSelector, StateMachine, MathUtil,
 	              CollisionGroup, CollisionGroups, Palette;
@@ -69,7 +81,9 @@ function ZombieMole:OnSpawned()
 	local root = self.Root :: BasePart
 	self.SurfaceOffset = humanoid.HipHeight + root.Size.Y / 2
 
+	self.SurfaceSearchAttempts = 0
 	self.Machine = self.Janitor:Add(self:_buildMachine())
+	self:BindStateUpdateIntervals(self.Machine)
 	self.Machine:Start()
 end
 
@@ -151,16 +165,43 @@ function ZombieMole:_undergroundSpeed(): number
 	return self.Definition.UndergroundSpeed * self.SpeedMultiplier * Services.StatusEffectService:GetSpeedMultiplier(self)
 end
 
--- A resurface point must be clear of defenses and other crops.
+-- A resurface point must have clear headroom: no defense, prop, rock, the Great Pumpkin
+-- or the chest in the body-sized box above the soil (plots and slot markers sit below
+-- the box, so erupting beside a crop is allowed).
 function ZombieMole:_isFree(point: Vector3): boolean
+	local arena = self.Match.Arena
+	local include = { self.Match.Core.Model }
+	for _, instance in { self.Match.Folder:FindFirstChild("Defenses"), self.Match.Folder:FindFirstChild("HarvestChest"), arena.PropsFolder, arena.GroundFolder } do
+		if instance then
+			table.insert(include, instance)
+		end
+	end
 	local params = OverlapParams.new()
 	params.FilterType = Enum.RaycastFilterType.Include
-	params.FilterDescendantsInstances = {
-		self.Match.Folder:FindFirstChild("Defenses") :: Instance,
-		self.Match.Core.Model,
-	}
-	local parts = Workspace:GetPartBoundsInBox(CFrame.new(point + Vector3.new(0, 2, 0)), Vector3.new(4, 4, 4), params)
+	params.FilterDescendantsInstances = include
+	local floorY = arena.FloorY
+	local parts = Workspace:GetPartBoundsInBox(CFrame.new(point.X, floorY + 3.7, point.Z), Vector3.new(4, 5, 4), params)
 	return #parts == 0
+end
+
+-- Soil under the point (dig grid) and headroom above it.
+function ZombieMole:_isValidSurface(point: Vector3): boolean
+	return self.Router:IsDiggableAt(point) and self:_isFree(point)
+end
+
+-- Plans a tunnel from here to `point`. Returns false when the router finds none.
+function ZombieMole:_routeTo(point: Vector3): boolean
+	local route = self.Router:FindPath(self:GetPosition(), point)
+	if route == nil then
+		return false
+	end
+	if #route == 0 then
+		route = { Vector3.new(point.X, self:_floorY(), point.Z) }
+	end
+	self.Route = route
+	self.RouteIndex = 1
+	self.ResurfacePoint = point
+	return true
 end
 
 -- Plans a tunnel to the current target. Returns false when no valid route exists.
@@ -202,8 +243,8 @@ function ZombieMole:OnDamaged(_amount: number, source: any)
 	self.CombatTarget = session
 	self.LastCombatHitAt = self.Now
 	local state = self.Machine:GetState()
-	if state == "AttackingCrop" or state == "Retargeting" then
-		self.Machine:Transition("Combat")
+	if state == "AttackingCrop" or state == "Retargeting" or state == "SelectingTarget" then
+		self.Machine:Transition("Interrupted")
 	end
 end
 
@@ -295,7 +336,7 @@ function ZombieMole:_buildMachine()
 			end
 			local waypoint = self.Route[self.RouteIndex]
 			if waypoint == nil or self.Now > self.TraversalDeadline then
-				machine:Transition("Resurfacing")
+				machine:Transition("SearchingSurfaceRoute")
 				return
 			end
 			local buriedPoint = Vector3.new(waypoint.X, self:_floorY() - definition.DigDepth, waypoint.Z)
@@ -307,14 +348,54 @@ function ZombieMole:_buildMachine()
 		end,
 	}
 
+	-- Arrived under the planned exit (or the tunnel timed out / the target vanished).
+	-- Re-validate the exit; if it is no longer usable, dig a short detour to another
+	-- valid point near the target (or near the mole when there is no target).
+	states.SearchingSurfaceRoute = {
+		Enter = function()
+			self.Mover:SetTarget(Vector3.new(self:GetPosition().X, self:_floorY() - definition.DigDepth, self:GetPosition().Z))
+		end,
+		Update = function(machine)
+			local here = self:GetPosition()
+			local planned = self.ResurfacePoint
+			if planned and MathUtil.FlatDistance(planned, here) <= 2.5 and self:_isValidSurface(planned) then
+				machine:Transition("Resurfacing")
+				return
+			end
+			if self:_isValidSurface(here) and (self.Target == nil or not self.Target:IsAlive()) then
+				self.ResurfacePoint = here
+				machine:Transition("Resurfacing")
+				return
+			end
+			self.SurfaceSearchAttempts += 1
+			if self.SurfaceSearchAttempts <= definition.SurfaceSearchAttempts then
+				local anchor = if self.Target and self.Target:IsAlive() then self.Target:GetPosition() else here
+				local alternative = self.Router:FindResurfacePoint(anchor, function(candidate)
+					return self:_isFree(candidate)
+				end)
+				if alternative == nil and anchor ~= here then
+					alternative = self.Router:FindResurfacePoint(here, function(candidate)
+						return self:_isFree(candidate)
+					end)
+				end
+				if alternative and self:_routeTo(alternative) then
+					machine:Transition("UndergroundTraversal")
+					return
+				end
+			end
+			-- Out of options: surface where it is rather than wander forever.
+			self.ResurfacePoint = here
+			machine:Transition("Resurfacing")
+		end,
+	}
+
 	states.Resurfacing = {
 		Enter = function()
-			local point = self.ResurfacePoint or self:GetPosition()
-			if not self:_isFree(point) and self.Target then
-				point = self.Router:FindResurfacePoint(self.Target:GetPosition(), function(candidate)
-					return self:_isFree(candidate)
-				end) or point
-			end
+			-- Vertical rise only: the mole is already under the validated point.
+			local here = self:GetPosition()
+			local planned = self.ResurfacePoint
+			local point = if planned and MathUtil.FlatDistance(planned, here) <= 2.5 then planned else here
+			self.SurfaceSearchAttempts = 0
 			local surface = Vector3.new(point.X, self:_floorY() + self.SurfaceOffset, point.Z)
 			self.Mover:SetMaxSpeed(definition.DigDepth / definition.ResurfaceDuration + 6)
 			self.Mover:SetTarget(surface, if self.Target then self.Target:GetPosition() else nil)
@@ -344,7 +425,7 @@ function ZombieMole:_buildMachine()
 		end,
 	}
 
-	states.Combat = {
+	states.Interrupted = {
 		Enter = function()
 			self.Target = self.CombatTarget
 		end,
@@ -373,7 +454,7 @@ function ZombieMole:_buildMachine()
 			if target == nil or not target:IsAlive() then
 				if machine:TimeInState() > 1 then
 					self.Target = TargetSelector.Select(self, TARGET_KINDS)
-					machine:Transition(if self.Underground then "Resurfacing" else "Idle")
+					machine:Transition(if self.Underground then "SearchingSurfaceRoute" else "Idle")
 				end
 				return
 			end
@@ -381,7 +462,7 @@ function ZombieMole:_buildMachine()
 				if self:_planRoute() then
 					machine:Transition("UndergroundTraversal")
 				else
-					machine:Transition("Resurfacing")
+					machine:Transition("SearchingSurfaceRoute")
 				end
 			elseif self:_targetInWalkRange() then
 				machine:Transition("AttackingCrop")
@@ -417,13 +498,14 @@ function ZombieMole:_buildMachine()
 		States = states,
 		Transitions = {
 			Idle = { "SelectingTarget" },
-			SelectingTarget = { "EnteringUnderground", "AttackingCrop", "Retargeting" },
+			SelectingTarget = { "EnteringUnderground", "AttackingCrop", "Retargeting", "Interrupted" },
 			EnteringUnderground = { "UndergroundTraversal" },
-			UndergroundTraversal = { "Resurfacing", "Retargeting" },
+			UndergroundTraversal = { "SearchingSurfaceRoute", "Retargeting" },
+			SearchingSurfaceRoute = { "Resurfacing", "UndergroundTraversal" },
 			Resurfacing = { "AttackingCrop" },
-			AttackingCrop = { "Retargeting", "Combat" },
-			Combat = { "Retargeting" },
-			Retargeting = { "UndergroundTraversal", "Resurfacing", "AttackingCrop", "SelectingTarget", "Idle", "Combat" },
+			AttackingCrop = { "Retargeting", "Interrupted" },
+			Interrupted = { "Retargeting" },
+			Retargeting = { "UndergroundTraversal", "SearchingSurfaceRoute", "AttackingCrop", "SelectingTarget", "Idle", "Interrupted" },
 			["*"] = { "Dying" },
 		},
 	})

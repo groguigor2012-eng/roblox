@@ -17,6 +17,7 @@
 		CoinReward      Match Coins for the killer at wave 1 (RewardService scales it)
 		Scaling         EnemyDifficultyModifier: how strongly wave growth applies (1 = fully)
 		UpdateInterval  AI think rate in seconds (AIScheduler)
+		StateUpdateIntervals  optional per-state think rates for state-machine AI
 		Agent           pathfinding agent size
 		Visual          ModelFactory.CreateEnemy parameters
 		IsBoss, KnockbackResistance (0..1)
@@ -44,7 +45,7 @@ local Enemies: { [string]: EnemyDefinition } = {
 		LeashRange = 34,
 		CropDamage = 15,
 		StructureDamage = 22,
-		TargetPriority = { Crop = 3, Core = 1, Player = 2.5, Sentry = 1.2 },
+		TargetPriority = { Crop = 3, Core = 1, Player = 2.5, Sentry = 1.2, Barricade = 0.6 },
 		CoinReward = 10,
 		Scaling = { Health = 1, Speed = 1 },
 		UpdateInterval = 0.2,
@@ -110,8 +111,24 @@ local Enemies: { [string]: EnemyDefinition } = {
 		StructureDamage = 10,
 		-- Damage taken while underground (AoE magic reaches it, melee and sentries do not).
 		UndergroundDamageMultiplier = 0.5,
-		-- Combat after being interrupted ends when no player hit it for this long.
+		-- The Interrupted state (a player hit it on the surface) ends when no player hit
+		-- it for this long.
 		CombatTimeout = 6,
+		-- Detour tunnels tried when the planned exit is blocked before surfacing anyway.
+		SurfaceSearchAttempts = 3,
+		-- Think rate per state (seconds); unlisted states use UpdateInterval.
+		StateUpdateIntervals = {
+			Idle = 0.3,
+			SelectingTarget = 0.2,
+			EnteringUnderground = 0.25,
+			UndergroundTraversal = 0.1,
+			SearchingSurfaceRoute = 0.2,
+			Resurfacing = 0.25,
+			AttackingCrop = 0.15,
+			Interrupted = 0.15,
+			Retargeting = 0.2,
+			Dying = 1,
+		},
 		-- Max distance for walking (instead of digging) to the next crop.
 		WalkRetargetDistance = 14,
 		GridCellSize = 4,
@@ -230,6 +247,8 @@ local Enemies: { [string]: EnemyDefinition } = {
 		MinionId = "ZombieFarmerMini",
 		-- Other witches closer than this push each other apart (prevents clumping).
 		SeparationRadius = 10,
+		-- Stay at least this far behind the closest allied ground enemy (to the player).
+		FrontlineBuffer = 6,
 		CropDamage = 0,
 		StructureDamage = 0,
 		TargetPriority = { Player = 1 },
@@ -268,6 +287,7 @@ local Enemies: { [string]: EnemyDefinition } = {
 		CrushRadius = 11,
 		-- Barricades and sentries inside this radius are hunted before crops.
 		DefenseSeekRadius = 70,
+		-- Aura: radius and the buffs it grants nearby enemies (configurable per boss).
 		AuraRadius = 35,
 		AuraSpeedBuff = 1.35,
 		AuraAttackSpeedBuff = 1.2,

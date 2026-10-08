@@ -6,6 +6,9 @@
 	Backline spawner (enemy id "Witch"; unrelated to the player Witch class).
 		* keeps a preferred distance band from the nearest player: retreats when
 		  crowded, advances when too far, otherwise holds and casts
+		* stays behind the frontline: the inner edge of the band is pushed out to
+		  FrontlineBuffer beyond the closest allied ground enemy to that player, so
+		  the horde is always between the witch and the defenders
 		* throws slowing potions on a ballistic arc (ProjectileSystem with gravity) at
 		  the predicted player position; the splash damages and applies "Slowed"
 		  through StatusEffectService (server-authoritative)
@@ -156,7 +159,18 @@ function Witch:_desiredPosition(targetPosition: Vector3, distance: number): (Vec
 			separation += MathUtil.FlatDirection(other:GetPosition(), position)
 		end
 	end
-	if distance < band[1] then
+	-- Behind the frontline: never closer to the player than the nearest ally (+buffer).
+	local minimum = band[1]
+	local frontline = math.huge
+	for _, ally in Services.EnemyService:GetEnemiesInRadius(self.Match, targetPosition, band[2]) do
+		if ally ~= self and ally.EnemyId ~= self.EnemyId and not ally.IsAir and not ally.IsBoss and not ally.Underground then
+			frontline = math.min(frontline, (ally:GetPosition() - targetPosition).Magnitude)
+		end
+	end
+	if frontline < math.huge then
+		minimum = math.clamp(frontline + self.Definition.FrontlineBuffer, band[1], band[2] - 4)
+	end
+	if distance < minimum then
 		return position + (away + separation) * 12, 2
 	elseif distance > band[2] then
 		return targetPosition + away * (band[2] - 4) + separation * 4, 3

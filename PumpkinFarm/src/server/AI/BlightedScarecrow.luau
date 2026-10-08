@@ -3,15 +3,19 @@
 	BlightedScarecrow
 	Path: ServerScriptService.Server.AI.BlightedScarecrow
 
-	Leaper. Hunts players and vaults over barricades.
+	Leaper. Hunts players and vaults over barricades and walls.
 
-		Chasing --(barricade ahead | target in leap band, cooldown ready)--> LeapWindup
+		Chasing --(barricade or wall ahead | target in leap band, cooldown ready)--> LeapWindup
 		LeapWindup (telegraph at landing spot) -> Leaping (ballistic, Ghost collision so
 		walls are cleared) -> Landing (shockwave: damage + 2 s server-authoritative stun
 		through StunService, heavy damage to defenses) -> Recovering -> Chasing
 
-	Landing spots are validated with a downward raycast against the arena ground before
-	leaping, so a scarecrow never jumps out of the map. Stun stacking is impossible:
+	Obstacle detection: a body-height ray toward the target (LeapTriggerRange long)
+	against defenses, props (fences) and ground obstacles (rocks); anything solid taller
+	than a step is an obstacle, so the scarecrow vaults the farm fence instead of
+	walking around to a gate. Landing spots are validated with a downward raycast
+	against the arena ground before leaping (never out of the map, never on top of a
+	rock), and the leap cooldown (LeapCooldown) starts on landing. Stun stacking is impossible:
 	StunService refuses to stun a stunned or recently-stunned player.
 
 	Dependencies: EnemyBase, Navigator, TargetSelector, StateMachine, MathUtil,
@@ -56,6 +60,9 @@ function BlightedScarecrow:OnSpawned()
 	self._defenseParams = RaycastParams.new()
 	self._defenseParams.FilterType = Enum.RaycastFilterType.Include
 	self._defenseParams.FilterDescendantsInstances = { self.Match.Folder:FindFirstChild("Defenses") :: Instance }
+	self._wallParams = RaycastParams.new()
+	self._wallParams.FilterType = Enum.RaycastFilterType.Include
+	self._wallParams.FilterDescendantsInstances = { self.Match.Arena.PropsFolder, self.Match.Arena.GroundFolder }
 
 	self.Machine = self.Janitor:Add(self:_buildMachine())
 	self.Machine:Start()
@@ -66,14 +73,34 @@ function BlightedScarecrow:Think(now: number, dt: number)
 	self.Machine:Update(dt)
 end
 
--- Returns a ground point to land on near `desired`, or nil if there is no floor.
+-- Returns a floor-level point to land on near `desired`, or nil if there is no floor
+-- there (outside the map) or the spot is on top of an obstacle.
 function BlightedScarecrow:_validLanding(desired: Vector3): Vector3?
-	local origin = Vector3.new(desired.X, self.Match.Arena.FloorY + 60, desired.Z)
+	local floorY = self.Match.Arena.FloorY
+	local origin = Vector3.new(desired.X, floorY + 60, desired.Z)
 	local result = Workspace:Raycast(origin, Vector3.new(0, -120, 0), self._groundParams)
-	if result == nil then
+	if result == nil or result.Position.Y > floorY + 1.5 then
 		return nil
 	end
 	return result.Position
+end
+
+-- A solid wall (fence, rock, prop) taller than a step between us and the target,
+-- within LeapTriggerRange.
+function BlightedScarecrow:_wallBetween(targetPosition: Vector3): boolean
+	local position = self:GetPosition()
+	local offset = MathUtil.Flat(targetPosition - position)
+	local distance = math.min(offset.Magnitude, self.Definition.LeapTriggerRange)
+	if distance < 1 then
+		return false
+	end
+	local result = Workspace:Raycast(position, offset.Unit * distance, self._wallParams)
+	if result == nil or not result.Instance.CanCollide then
+		return false
+	end
+	local part = result.Instance
+	local top = part.Position.Y + part.Size.Y / 2
+	return top > self.Match.Arena.FloorY + 2
 end
 
 function BlightedScarecrow:_defenseBetween(targetPosition: Vector3): boolean
@@ -95,7 +122,9 @@ function BlightedScarecrow:_tryStartLeap(target: any): boolean
 	local targetPosition = target:GetPosition()
 	local position = self:GetPosition()
 	local distance = MathUtil.FlatDistance(position, targetPosition)
-	local blocked = self:_defenseBetween(targetPosition) or self.Navigator:GetBlockingDefense(definition.LeapTriggerRange) ~= nil
+	local blocked = self:_defenseBetween(targetPosition)
+		or self:_wallBetween(targetPosition)
+		or self.Navigator:GetBlockingDefense(definition.LeapTriggerRange) ~= nil
 	local inBand = distance >= definition.LeapMinDistance and distance <= definition.LeapMaxDistance
 	if not blocked and not inBand then
 		return false
@@ -103,6 +132,10 @@ function BlightedScarecrow:_tryStartLeap(target: any): boolean
 	local direction = MathUtil.FlatDirection(position, targetPosition)
 	local leapDistance = math.clamp(distance, definition.LeapMinDistance, definition.LeapMaxDistance)
 	local landing = self:_validLanding(position + direction * leapDistance)
+	if landing == nil and leapDistance + 6 <= definition.LeapMaxDistance then
+		-- The first spot is on an obstacle: try a little further.
+		landing = self:_validLanding(position + direction * (leapDistance + 6))
+	end
 	if landing == nil then
 		return false
 	end

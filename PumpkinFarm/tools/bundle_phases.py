@@ -60,7 +60,23 @@ PHASE2 = [
             "CropController", "HarvestChestController", "DefenseShopController", "EscapeController"]]),
 ]
 
-PHASES = {1: PHASE1, 2: PHASE2}
+PHASE3 = [
+    ("Configuration", [f"src/shared/Config/{n}.luau" for n in
+        ["EnemyConfig", "WaveConfig", "DifficultyConfig", "StatusEffectConfig"]]),
+    ("Enemy architecture (EnemyBase, objectives, movement)", [f"src/server/AI/{n}.luau" for n in
+        ["EnemyBase", "TargetSelector", "Navigator", "PathQueue", "MoverRig", "UndergroundRouter"]]),
+    ("Enemies", [f"src/server/AI/{n}.luau" for n in
+        ["ZombieFarmer", "ZombieMole", "BlightedScarecrow", "PlagueCrow", "Witch", "CursedHarvester"]]),
+    ("Scheduling, projectiles and collision", [f"src/server/Systems/{n}.luau" for n in
+        ["AIScheduler", "ProjectileSystem", "CollisionGroups"]]),
+    ("Waves and difficulty", ["src/server/Systems/WaveComposer.luau", "src/server/Systems/WaveSpawner.luau",
+        "src/server/Services/WaveService.luau", "src/server/Services/DifficultyService.luau"]),
+    ("Enemy, damage and status services", [f"src/server/Services/{n}.luau" for n in
+        ["EnemyService", "DamageService", "StatusEffectService", "StunService", "EffectService"]]),
+    ("Client: boss HUD and effects", ["src/client/Controllers/BossBarController.luau", "src/client/Controllers/EffectsController.luau"]),
+]
+
+PHASES = {1: PHASE1, 2: PHASE2, 3: PHASE3}
 
 
 def studio_path(rel):

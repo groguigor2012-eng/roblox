@@ -7,11 +7,13 @@
 		* Intro: rises for IntroDuration (anchored, announced to the match)
 		* Objective priority: defenses within DefenseSeekRadius, then crops, then the
 		  Great Pumpkin; players only when they get close
-		* Crush: any barricade inside CrushRadius is destroyed instantly
+		* Crush: any barricade inside CrushRadius, hit by the sweep or attacked is
+		  destroyed instantly (barricades never soak boss damage)
 		* Sweep: every SweepCooldown, a scythe sweep damages players, crops and
 		  defenses within SweepRadius
 		* Aura: every AuraPulseInterval nearby enemies receive the "BossAura" status
-		  (speed x1.35, attack speed x1.2); it expires shortly after leaving the radius
+		  with the speed / attack-speed buffs from this boss's EnemyConfig (AuraRadius,
+		  AuraSpeedBuff, AuraAttackSpeedBuff); it expires shortly after leaving the radius
 		* Enrage below EnrageThreshold health: faster movement
 		* Boss HUD: BossActive/BossName/BossHealth/BossMaxHealth/BossAuraRadius/BossEnraged
 		  attributes on the match folder
@@ -103,14 +105,34 @@ function CursedHarvester:_selectObjective(now: number): any
 	return self.Target
 end
 
+function CursedHarvester:_crushBarricade(defense: any)
+	if defense.Kind == "Barricade" and defense:IsAlive() then
+		local position = defense:GetPosition()
+		Services.DefenseService:DestroyDefense(defense, "Crushed")
+		Services.EffectService:PlayAt(self.Match, "BossCrush", position, {})
+	end
+end
+
 function CursedHarvester:_crush()
 	local definition = self.Definition
 	for _, defense in Services.DefenseService:GetDefensesInRadius(self.Match, self:GetPosition(), definition.CrushRadius) do
-		if defense.Kind == "Barricade" and defense:IsAlive() then
-			Services.DefenseService:DestroyDefense(defense, "Crushed")
-			Services.EffectService:PlayAt(self.Match, "BossCrush", defense:GetPosition(), {})
-		end
+		self:_crushBarricade(defense)
 	end
+end
+
+-- Barricades never soak boss hits: anything that would damage one crushes it outright.
+function CursedHarvester:AttackTarget(target: any, now: number): boolean
+	if target and target.Kind == "Barricade" and target:IsAlive() then
+		local reach = (self.Definition.AttackRange or 5) + TargetSelector.GetRadius(target) + self.HitRadius
+		if (target:GetPosition() - self:GetPosition()).Magnitude <= reach then
+			self:MarkAttacked(now)
+			self:FaceTowards(target:GetPosition())
+			self:_crushBarricade(target)
+			return true
+		end
+		return false
+	end
+	return EnemyBase.AttackTarget(self, target, now)
 end
 
 function CursedHarvester:_sweep(now: number)
@@ -133,7 +155,11 @@ function CursedHarvester:_sweep(now: number)
 		hitSomething = true
 	end
 	for _, defense in Services.DefenseService:GetDefensesInRadius(match, position, radius) do
-		Services.DamageService:DamageTarget(defense, self.Stats.StructureDamage, source)
+		if defense.Kind == "Barricade" then
+			self:_crushBarricade(defense)
+		else
+			Services.DamageService:DamageTarget(defense, self.Stats.StructureDamage, source)
+		end
 		hitSomething = true
 	end
 	local core = match.Core
@@ -151,7 +177,13 @@ function CursedHarvester:_pulseAura()
 	local definition = self.Definition
 	for _, enemy in Services.EnemyService:GetEnemiesInRadius(self.Match, self:GetPosition(), definition.AuraRadius) do
 		if enemy ~= self then
-			Services.StatusEffectService:Apply(enemy, "BossAura", { Source = self })
+			Services.StatusEffectService:Apply(enemy, "BossAura", {
+				Source = self,
+				Overrides = {
+					SpeedMultiplier = definition.AuraSpeedBuff,
+					AttackSpeedMultiplier = definition.AuraAttackSpeedBuff,
+				},
+			})
 		end
 	end
 end

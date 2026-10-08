@@ -23,6 +23,7 @@
 		DifficultyService:GetContinueFactor(stat, continueLevel) -> number
 		DifficultyService:GetEnemyStats(enemyId, context) -> { MaxHealth, Speed, Damage, CropDamage, StructureDamage, DamageFactor }
 		DifficultyService:GetEnemyCount(wave, context) -> number
+		DifficultyService:GetThreatBudget(wave, context) -> number
 		DifficultyService:GetSpawnInterval(wave, continueLevel) -> number
 		DifficultyService:GetBurstSize(wave) -> number
 		DifficultyService:GetSpecialShare(wave, continueLevel) -> number
@@ -126,6 +127,14 @@ function DifficultyService:GetEnemyCount(wave: number, context: Context): number
 		count = math.floor(count * WaveConfig.BossEscortMultiplier + 0.5)
 	end
 	return math.clamp(count, 1, rule.Max)
+end
+
+-- Threat points a wave may spend (see WaveConfig.ThreatBudget). The boss is excluded.
+function DifficultyService:GetThreatBudget(wave: number, context: Context): number
+	local rule = WaveConfig.ThreatBudget
+	local w = math.max(1, wave)
+	local perSlot = math.min(rule.Max, rule.Base + rule.PerWave * (w - 1)) + rule.PerContinue * context.ContinueLevel
+	return self:GetEnemyCount(w, context) * perSlot
 end
 
 function DifficultyService:GetSpawnInterval(wave: number, continueLevel: number): number

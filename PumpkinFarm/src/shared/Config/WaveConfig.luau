@@ -14,6 +14,7 @@
 		MaxPerWave      optional absolute cap
 		Special         counts as a "specialized" enemy (affected by Continue special chance)
 		Backline        spawns after the frontline lead (see FrontlineLead)
+		Cost            threat points (a grunt costs GruntCost); see ThreatBudget
 
 	Dependencies: Shared.Utilities.TableUtil
 ]]
@@ -27,6 +28,7 @@ export type ArchetypeRule = {
 	MaxShare: number,
 	MaxPerWave: number?,
 	Special: boolean,
+	Cost: number,
 	Backline: boolean?,
 }
 
@@ -62,10 +64,23 @@ local WaveConfig = {
 
 	GruntEnemyId = "ZombieFarmer",
 
+	-- Threat budget: every wave gets budget = slots * perSlot, where
+	-- perSlot = min(Max, Base + PerWave * (wave - 1)) + PerContinue * ContinueLevel.
+	-- Specialists are only picked while the budget can still pay for them AND a grunt
+	-- for every remaining slot, so expensive mixes cannot appear early. The boss is
+	-- outside the budget.
+	GruntCost = 1,
+	ThreatBudget = {
+		Base = 1.25,
+		PerWave = 0.06,
+		Max = 2.6,
+		PerContinue = 0.2,
+	},
+
 	Archetypes = {
-		ZombieMole = { UnlockWave = 3, Weight = 12, WeightPerWave = 2, MaxShare = 0.25, Special = true },
-		PlagueCrow = { UnlockWave = 4, Weight = 12, WeightPerWave = 1.5, MaxShare = 0.25, Special = true },
-		BlightedScarecrow = { UnlockWave = 6, Weight = 10, WeightPerWave = 1.5, MaxShare = 0.2, Special = true },
+		ZombieMole = { UnlockWave = 3, Weight = 12, WeightPerWave = 2, MaxShare = 0.25, Special = true, Cost = 2 },
+		PlagueCrow = { UnlockWave = 4, Weight = 12, WeightPerWave = 1.5, MaxShare = 0.25, Special = true, Cost = 1.5 },
+		BlightedScarecrow = { UnlockWave = 6, Weight = 10, WeightPerWave = 1.5, MaxShare = 0.2, Special = true, Cost = 2.5 },
 		Witch = {
 			UnlockWave = 8,
 			Weight = 6,
@@ -74,6 +89,7 @@ local WaveConfig = {
 			MaxPerWave = 4,
 			Special = true,
 			Backline = true,
+			Cost = 4,
 		},
 	} :: { [string]: ArchetypeRule },
 }

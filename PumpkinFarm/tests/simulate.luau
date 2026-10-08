@@ -14,7 +14,7 @@ local process = require("@lune/process")
 local roblox = require("@lune/roblox")
 local Engine = require("./sim/Engine")
 
-local Vector3, CFrame = roblox.Vector3, roblox.CFrame
+local Vector3, CFrame, Instance = roblox.Vector3, roblox.CFrame, roblox.Instance
 
 local EXPECTED_WARNINGS = {
 	"using in%-memory profiles", -- Studio mock store
@@ -28,7 +28,13 @@ local function check(condition, message)
 	end
 end
 
+-- SIM_ONLY=<text> runs only the scenarios whose name contains <text>.
+local only = process.env.SIM_ONLY
+
 local function scenario(name, fn)
+	if only and not name:find(only, 1, true) then
+		return
+	end
 	local started = os.clock()
 	local sim = Engine.new({ Echo = false })
 	local ok, err = pcall(fn, sim)
@@ -582,6 +588,404 @@ scenario("server reset: shutdown mid-match never pays the chest or persists matc
 	local data = profile(sim, gil)
 	check(data == nil or data.Candies == candies, "chest value is not converted by a shutdown")
 	check(data == nil or data.MatchCoins == nil, "match coins never enter the profile")
+end)
+
+-- Records every state an AI's state machine enters (the initial state included).
+local function trackStates(enemy)
+	local visits = { [enemy.Machine:GetState()] = 1 }
+	local order = { enemy.Machine:GetState() }
+	enemy.Machine.StateChanged:Connect(function(newState)
+		visits[newState] = (visits[newState] or 0) + 1
+		table.insert(order, newState)
+	end)
+	return visits, order
+end
+
+local function setupDefender(sim, name)
+	sim:Boot()
+	local player = sim:AddPlayer(name)
+	sim:Run(2)
+	check(sim:Invoke(player, "RequestJoinQueue").Ok, "queue")
+	check(waitForState(sim, player, "Intermission", 30), "intermission")
+	local match = matchOf(sim, player)
+	match:SetPhaseDuration(100000) -- stay in the intermission: only the enemies spawned below act
+	match.Core.MaxHealth = 1_000_000
+	match.Core.Health = 1_000_000
+	sim:Service("StatusEffectService"):Apply(sim:Service("PlayerService"):GetSession(player), "SpawnProtection", { Duration = 5000 })
+	return player, match
+end
+
+local function plantRow(sim, player, count)
+	local plot = ownPlot(sim, player)
+	standNear(sim, player, plot.Slots[1].Position)
+	sim:Chat(player, "/pf seeds VoidPumpkin 6")
+	for index = 1, count do
+		sim:Run(0.6)
+		local result = sim:Invoke(player, "RequestPlant", plot.Id, index, if index % 2 == 0 then "VoidPumpkin" else "NeonStarFruit")
+		check(result.Ok, "plant " .. tostring(result.Code))
+	end
+	return plot
+end
+
+scenario("zombie mole: tunnels under the fence, detours around a blocked exit, retargets, is interrupted, dies underground", function(sim)
+	local hana, match = setupDefender(sim, "Hana")
+	plantRow(sim, hana, 4)
+	local enemies = sim:Service("EnemyService")
+	local crops = sim:Service("CropService")
+	local fence = sim:Require(sim.DataModel:GetService("ReplicatedStorage").Shared.Config.MatchConfig).Farm.FenceRadius
+	local center = match.Arena.Center
+	standNear(sim, hana, center + Vector3.new(0, 0, -60)) -- out of the way
+
+	-- Mole 1: full cycle with a blocked exit.
+	local spawn = match.Arena.EnemySpawns[1]
+	local mole = enemies:SpawnEnemy(match, "ZombieMole", CFrame.new(spawn + Vector3.new(0, 4, 0)), { IsWaveEnemy = false })
+	check(mole, "mole spawned")
+	local visits, order = trackStates(mole)
+	local blocker, blockedAt
+	local lastPosition, maxStep, buriedFrames = mole:GetPosition(), 0, 0
+	local startDistance = (mole:GetPosition() - center).Magnitude
+	check(sim:RunUntil(function()
+		return mole.Machine:Is("AttackingCrop") and (visits.UndergroundTraversal or 0) >= 1 and not mole.Underground
+	end, 120, function()
+		local position = mole:GetPosition()
+		if mole.Underground then
+			buriedFrames += 1
+			maxStep = math.max(maxStep, (Vector3.new(position.X, 0, position.Z) - Vector3.new(lastPosition.X, 0, lastPosition.Z)).Magnitude)
+		end
+		lastPosition = position
+		-- A defense is built on the planned exit while the mole is still tunnelling.
+		if blocker == nil and mole.Machine:Is("UndergroundTraversal") and mole.ResurfacePoint then
+			blockedAt = mole.ResurfacePoint
+			blocker = Instance.new("Part")
+			blocker.Name = "TestBlocker"
+			blocker.Anchored = true
+			blocker.Size = Vector3.new(4, 5, 4)
+			blocker.CFrame = CFrame.new(blockedAt.X, match.Arena.FloorY + 2.5, blockedAt.Z)
+			blocker.Parent = match.Folder.Defenses
+		end
+	end), "mole reaches a crop; states " .. table.concat(order, ">"))
+	for _, state in { "Idle", "SelectingTarget", "EnteringUnderground", "UndergroundTraversal", "SearchingSurfaceRoute", "Resurfacing", "AttackingCrop" } do
+		check(visits[state], "mole visited " .. state .. ": " .. table.concat(order, ">"))
+	end
+	check(visits.UndergroundTraversal >= 2, "blocked exit caused a detour tunnel: " .. table.concat(order, ">"))
+	local surfacedAt = mole:GetPosition()
+	check(blockedAt and (Vector3.new(surfacedAt.X, 0, surfacedAt.Z) - Vector3.new(blockedAt.X, 0, blockedAt.Z)).Magnitude > 2, "did not surface inside the blocker")
+	check(startDistance > fence + 20 and (surfacedAt - center).Magnitude < fence, "travelled from outside the fence to inside it")
+	check(buriedFrames > 20, "tunnelling took time (" .. buriedFrames .. " frames)")
+	check(maxStep < 3, "no teleport while buried (max step " .. string.format("%.2f", maxStep) .. " studs per frame)")
+	check(mole.UpdateInterval == mole.Definition.StateUpdateIntervals.AttackingCrop, "state-specific think rate")
+
+	-- Interrupted: a player hits it on the surface.
+	blocker:Destroy()
+	standNear(sim, hana, mole:GetPosition(), Vector3.new(0, 0, 3))
+	sim:Service("DamageService"):DamageEnemy(mole, 1, { Player = hana })
+	sim:Run(0.5)
+	check(visits.Interrupted, "player interrupted the mole: " .. table.concat(order, ">"))
+	sim:Service("DamageService"):DamageEnemy(mole, 1e6, { Player = hana })
+	sim:Run(3)
+	check(not mole:IsAlive(), "mole 1 dead")
+
+	-- Mole 2: its target crop is destroyed mid-tunnel, then it dies underground.
+	standNear(sim, hana, center + Vector3.new(0, 0, -60))
+	local mole2 = enemies:SpawnEnemy(match, "ZombieMole", CFrame.new(match.Arena.EnemySpawns[3] + Vector3.new(0, 4, 0)), { IsWaveEnemy = false })
+	local visits2, order2 = trackStates(mole2)
+	check(sim:RunUntil(function()
+		return mole2.Machine:Is("UndergroundTraversal") and mole2.Target ~= nil
+	end, 60), "mole 2 tunnelling")
+	local lostTarget = mole2.Target
+	crops:DestroyCrop(lostTarget, "Eaten")
+	check(sim:RunUntil(function()
+		return (visits2.Retargeting or 0) >= 1 and mole2.Target ~= lostTarget
+	end, 10), "retargeted after its crop vanished: " .. table.concat(order2, ">"))
+	check(sim:RunUntil(function()
+		return mole2.Underground and mole2.Machine:Is("UndergroundTraversal")
+	end, 30), "underground again")
+	check(sim:Service("DamageService"):DamageEnemy(mole2, 50, { Player = hana }) == 0, "melee cannot reach a buried mole")
+	sim:Service("DamageService"):DamageEnemy(mole2, 1e6, { Player = hana, CanHitUnderground = true })
+	check(visits2.Dying, "died underground")
+	check(mole2.Root == nil or mole2.Root.Parent == nil or math.abs(mole2:GetPosition().Y - match.Arena.FloorY) < 6, "corpse brought to the surface")
+	sim:Run(5)
+	check(enemies:GetAliveCount(match) == 0, "no moles left")
+	check(#match.Folder.Enemies:GetChildren() == 0, "models cleaned up")
+end)
+
+scenario("scarecrow, crows, witch and boss: leap + stun rules, theft, minions, aura, instant barricade crush", function(sim)
+	local hana, match = setupDefender(sim, "Hana")
+	local ivan = sim:AddPlayer("Ivan") -- lobby player for stun death / leave checks below
+	plantRow(sim, hana, 6)
+	local enemies = sim:Service("EnemyService")
+	local effects = sim:Service("StatusEffectService")
+	local stun = sim:Service("StunService")
+	local players = sim:Service("PlayerService")
+	local damage = sim:Service("DamageService")
+	local center = match.Arena.Center
+	local session = players:GetSession(hana)
+	standNear(sim, hana, center + Vector3.new(6, 0, 6))
+
+	-- Stun rules (StunService): 2 s, no extension by spam, immunity window, movement restored.
+	sim:Run(1)
+	check(stun:TryStun(session, 2, nil), "stun applied")
+	local humanoid = session.Humanoid
+	check(humanoid.WalkSpeed == 0, "stunned player cannot walk")
+	sim:Run(1)
+	check(not stun:TryStun(session, 2, nil), "a second stun does not extend the first")
+	sim:Run(1.2)
+	check(not stun:IsStunned(session) and humanoid.WalkSpeed > 0, "stun ends after 2 s and movement is restored")
+	check(not stun:TryStun(session, 2, nil), "post-stun immunity")
+	sim:Run(2)
+	-- Death and leaving while stunned (a lobby player: no match rules involved).
+	local ivanSession = players:GetSession(ivan)
+	check(stun:TryStun(ivanSession, 2, nil), "ivan stunned")
+	ivan.Character:FindFirstChildOfClass("Humanoid").Health = 0
+	sim:Run(0.5)
+	check(not stun:IsStunned(ivanSession), "death clears the stun")
+	sim:Run(4)
+	check(stun:TryStun(ivanSession, 2, nil), "ivan stunned again after respawn")
+	sim:RemovePlayer(ivan)
+	sim:Run(1)
+
+	-- Scarecrow: the player is beyond leap range and a fence is in the way (45 degrees is
+	-- between two gates), so it must vault the wall rather than walk round to a gate.
+	local fence = sim:Require(sim.DataModel:GetService("ReplicatedStorage").Shared.Config.MatchConfig).Farm.FenceRadius
+	local outside = center + Vector3.new(41, 4, 41)
+	local crow = nil
+	local scarecrow = enemies:SpawnEnemy(match, "BlightedScarecrow", CFrame.new(outside), { IsWaveEnemy = false })
+	local sVisits, sOrder = trackStates(scarecrow)
+	local leapTimes, leapFrom, landedAt = {}, {}, {}
+	scarecrow.Machine.StateChanged:Connect(function(newState)
+		if newState == "Leaping" then
+			table.insert(leapTimes, sim.Scheduler.Now)
+			table.insert(leapFrom, scarecrow:GetPosition())
+		elseif newState == "Landing" then
+			table.insert(landedAt, scarecrow:GetPosition())
+		end
+	end)
+	local stunnedSeen = false
+	local function watchStun()
+		if stun:IsStunned(session) then
+			stunnedSeen = true
+		end
+	end
+	check(sim:RunUntil(function()
+		return #leapTimes >= 1 and stunnedSeen
+	end, 90, watchStun), "scarecrow leapt the fence and stunned the player: " .. table.concat(sOrder, ">"))
+	local function flatRadius(point)
+		return (Vector3.new(point.X, 0, point.Z) - Vector3.new(center.X, 0, center.Z)).Magnitude
+	end
+	check(flatRadius(leapFrom[1]) > fence and flatRadius(landedAt[1]) < fence, "first leap cleared the fence (from r=" .. math.floor(flatRadius(leapFrom[1])) .. " to r=" .. math.floor(flatRadius(landedAt[1])) .. ")")
+	-- The player runs out through the other side: it must leap again, but not before
+	-- its cooldown.
+	-- (A stunned player is snapped back by StunService, so wait for the stun to end.)
+	check(sim:RunUntil(function()
+		return not stun:IsStunned(session)
+	end, 10), "stun wears off")
+	local stunAnchor = session:GetPosition()
+	standNear(sim, hana, center + Vector3.new(75, 0, 0))
+	sim:Run(0.2)
+	check((session:GetPosition() - stunAnchor).Magnitude > 30, "an unstunned player moves freely")
+	check(sim:RunUntil(function()
+		return #leapTimes >= 2
+	end, 90, watchStun), "second leap: " .. table.concat(sOrder, ">"))
+	check(sVisits.LeapWindup and sVisits.Landing, "telegraph and landing states")
+	check(leapTimes[2] - leapTimes[1] >= scarecrow.Definition.LeapCooldown, "leap cooldown respected")
+	damage:DamageEnemy(scarecrow, 1e6, { Player = hana })
+
+	-- Plague Crow: flies at altitude, steals a crop, is shot down, the loot returns.
+	sim:Service("CropService"):ForceRipenAll(match)
+	crow = enemies:SpawnEnemy(match, "PlagueCrow", CFrame.new(match.Arena.EnemySpawns[2] + Vector3.new(0, 30, 0)), { IsWaveEnemy = false })
+	local cVisits, cOrder = trackStates(crow)
+	local minAltitude = math.huge
+	local stolen = 0
+	sim:Service("CropService").CropRemoved:Connect(function(_, _, reason)
+		if reason == "Stolen" then
+			stolen += 1
+		end
+	end)
+	check(sim:RunUntil(function()
+		return crow.Carrying ~= nil
+	end, 90, function()
+		if crow.Machine:Is("Cruising") then
+			minAltitude = math.min(minAltitude, crow:GetPosition().Y - match.Arena.FloorY)
+		end
+	end), "crow stole a crop: " .. table.concat(cOrder, ">"))
+	check(stolen == 1 and cVisits.Diving and cVisits.Stealing, "dive and steal states")
+	check(minAltitude > 6, "cruises above the ground (" .. minAltitude .. ")")
+	local chestBefore = sim:Service("HarvestChestService"):GetTotalValue(match)
+	damage:DamageEnemy(crow, 1e6, { Player = hana })
+	sim:Run(1)
+	check(sim:Service("HarvestChestService"):GetTotalValue(match) > chestBefore, "loot recovered into the chest")
+
+	-- Witch: stays back, slows with potions, summons minions up to the cap.
+	local witch = enemies:SpawnEnemy(match, "Witch", CFrame.new(center + Vector3.new(0, 4, 80)), { IsWaveEnemy = false })
+	local maxMinions, slowed = 0, false
+	local frontlineFrames, behindFrames = 0, 0
+	local distances = {}
+	sim:Run(45, function()
+		local count = 0
+		for _, enemy in enemies:GetEnemies(match) do
+			if enemy.Summoner == witch and enemy:IsAlive() then
+				count += 1
+			end
+		end
+		maxMinions = math.max(maxMinions, count)
+		if effects:Has(session, "Slowed") then
+			slowed = true
+		end
+		if witch:IsAlive() then
+			local mine = (witch:GetPosition() - session:GetPosition()).Magnitude
+			table.insert(distances, mine)
+			local front = math.huge
+			for _, enemy in enemies:GetEnemies(match) do
+				if enemy ~= witch and enemy:IsAlive() then
+					front = math.min(front, (enemy:GetPosition() - session:GetPosition()).Magnitude)
+				end
+			end
+			if front < 40 then
+				frontlineFrames += 1
+				if mine >= front then
+					behindFrames += 1
+				end
+			end
+		end
+		return false
+	end)
+	check(frontlineFrames > 20 and behindFrames / frontlineFrames > 0.8, "witch stays behind her minions (" .. behindFrames .. "/" .. frontlineFrames .. ")")
+	check(maxMinions >= 1 and maxMinions <= witch.Definition.MaxMinions, "minions summoned within the cap (" .. maxMinions .. ")")
+	check(slowed, "a potion slowed the player")
+	table.sort(distances)
+	check(distances[math.floor(#distances / 2)] >= witch.Definition.PreferredRange[1] * 0.75, "witch keeps her distance (median " .. math.floor(distances[math.floor(#distances / 2)]) .. ")")
+	damage:DamageEnemy(witch, 1e6, { Player = hana })
+	sim:Chat(hana, "/pf killall")
+	sim:Run(1)
+
+	-- Cursed Harvester: announcement, HUD, aura buff, instant barricade crush, rewards.
+	sim:Chat(hana, "/pf coins 2000")
+	local gate = match.Arena.Gates[1]
+	standNear(sim, hana, gate, Vector3.new(-10, 0, 0))
+	local built = sim:Invoke(hana, "RequestPurchaseDefense", "IronBarricade", gate, 90)
+	check(built.Ok, "barricade built: " .. tostring(built.Code))
+	local defenseService = sim:Service("DefenseService")
+	local barricade = defenseService:GetDefenses(match)[1]
+	local destroyReason
+	local originalDestroy = defenseService.DestroyDefense
+	defenseService.DestroyDefense = function(service, defense, reason)
+		if defense == barricade then
+			destroyReason = reason
+		end
+		return originalDestroy(service, defense, reason)
+	end
+	standNear(sim, hana, center + Vector3.new(-20, 0, -20))
+	local outward = (gate - center).Unit
+	local boss = enemies:SpawnEnemy(match, "CursedHarvester", CFrame.new(gate + outward * 30 + Vector3.new(0, 6, 0)), { IsWaveEnemy = false })
+	check(sim:CountEvents(hana, "MatchEvent", function(kind)
+		return kind == "BossSpawned"
+	end) == 1, "boss announced")
+	check(match.Folder:GetAttribute("BossActive") == true and match.Folder:GetAttribute("BossName") ~= nil, "boss HUD")
+	local escort = enemies:SpawnEnemy(match, "ZombieFarmer", CFrame.new(gate + outward * 34 + Vector3.new(4, 3, 0)), { IsWaveEnemy = false })
+	local auraSeen = false
+	check(sim:RunUntil(function()
+		return destroyReason ~= nil
+	end, 60, function()
+		if escort:IsAlive() and effects:Has(escort, "BossAura") and math.abs(effects:GetSpeedMultiplier(escort) - boss.Definition.AuraSpeedBuff) < 1e-6 then
+			auraSeen = true
+		end
+	end), "boss destroyed the barricade")
+	check(destroyReason == "Crushed", "crushed instantly, not chipped down (" .. tostring(destroyReason) .. ")")
+	check(auraSeen, "aura buffed a nearby enemy's speed")
+	damage:DamageEnemy(boss, 1e7, { Player = hana })
+	sim:Run(2)
+	check(match.Folder:GetAttribute("BossActive") == false, "boss HUD cleared")
+	local core = false
+	for _, entry in sim:Service("HarvestChestService"):GetSnapshot(match).Entries do
+		if entry.ItemId == "CursedCore" then
+			core = true
+		end
+	end
+	check(core, "boss reward in the chest")
+	check(sim:CountEvents(hana, "MatchEvent", function(kind)
+		return kind == "BossDefeated"
+	end) == 1, "boss defeat announced once")
+	sim:Chat(hana, "/pf killall")
+	sim:Run(5)
+	check(enemies:GetAliveCount(match) == 0 and #match.Folder.Enemies:GetChildren() == 0, "every model cleaned up")
+end)
+
+scenario("waves 1-12 with instant kills: completion races, boss wave, caps, cleanup, a player leaving mid-wave", function(sim)
+	sim:Boot()
+	local jo = sim:AddPlayer("Jo")
+	local kai = sim:AddPlayer("Kai")
+	sim:Run(2)
+	check(sim:Invoke(jo, "RequestJoinQueue").Ok and sim:Invoke(kai, "RequestJoinQueue").Ok, "queue")
+	check(waitForState(sim, jo, "Intermission", 30), "intermission")
+	local match = matchOf(sim, jo)
+	local enemies = sim:Service("EnemyService")
+	local waves = sim:Service("WaveService")
+	local WaveConfig = sim:Require(sim.DataModel:GetService("ReplicatedStorage").Shared.Config.WaveConfig)
+	local completions = {}
+	local maxAlive = 0
+	local earlyCompletion = nil
+	local playerService = sim:Service("PlayerService")
+	for _, player in { jo, kai } do
+		sim:Service("StatusEffectService"):Apply(playerService:GetSession(player), "SpawnProtection", { Duration = 5000 })
+	end
+	match.Machine.StateChanged:Connect(function(newState)
+		if newState == "WaveComplete" then
+			completions[match.Wave] = (completions[match.Wave] or 0) + 1
+			local state = waves:GetRemaining(match)
+			if state ~= 0 then
+				earlyCompletion = `wave {match.Wave} completed with {state} remaining`
+			end
+		end
+	end)
+	local killer = { Player = jo, CanHitUnderground = true }
+	local left = false
+	local function frame()
+		-- Skip timers so the run is quick.
+		local current = match:GetState()
+		if current == "Intermission" or current == "Extraction" then
+			if current == "Extraction" then
+				for _, player in { jo, kai } do
+					local door = sim:LastEvent(player, "ExtractionUpdated")
+					if player.Parent and door and door[1].Open then
+						standNear(sim, player, door[1].DoorPosition, Vector3.new(0, 0, 6))
+						sim:Invoke(player, "RequestContinue")
+					end
+				end
+			else
+				match:SetPhaseDuration(0)
+			end
+		end
+		local alive = enemies:GetAliveCount(match)
+		maxAlive = math.max(maxAlive, alive)
+		-- Kill everything the moment it appears (the race: kills land on the same frame
+		-- as spawns, so the wave must still wait for the spawner to finish).
+		for _, enemy in enemies:GetEnemies(match) do
+			if enemy:IsAlive() then
+				sim:Service("DamageService"):DamageEnemy(enemy, 1e8, killer)
+			end
+		end
+		if not left and match.Wave == 7 and current == "WaveActive" then
+			left = true
+			sim:RemovePlayer(kai)
+		end
+		return match.Wave >= 12 and current == "WaveComplete"
+	end
+	check(sim:RunUntil(frame, 2400, frame), "reached wave 12; state " .. tostring(match:GetState()) .. " wave " .. tostring(match.Wave))
+	check(earlyCompletion == nil, tostring(earlyCompletion))
+	for wave = 1, 12 do
+		check(completions[wave] == 1, `wave {wave} completed exactly once ({completions[wave]})`)
+	end
+	check(sim:CountEvents(jo, "MatchEvent", function(kind, data)
+		return kind == "WaveStarted" and data.IsBoss and data.Wave == 10
+	end) == 1, "wave 10 was a boss wave")
+	check(maxAlive <= WaveConfig.MaxAliveEnemies, "alive cap respected (" .. maxAlive .. ")")
+	check(left and match.Sessions[jo] ~= nil and match:GetState() ~= "MatchEnding", "the match carried on after Kai left mid-wave")
+	check(enemies:GetAliveCount(match) == 0, "nothing left alive")
+	-- Corpses linger briefly for the death effect, then are removed.
+	check(sim:RunUntil(function()
+		return #match.Folder.Enemies:GetChildren() == 0
+	end, 10), "no corpse or model left behind")
+	check(sim:Service("EnemyService"):SweepOrphans(match) == 0, "orphan sweep finds nothing")
 end)
 
 scenario("disconnects: leaving mid-wave ends an abandoned match and releases everything", function(sim)

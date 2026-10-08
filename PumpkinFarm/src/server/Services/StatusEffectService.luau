@@ -20,7 +20,9 @@
 
 	API:
 		StatusEffectService:Apply(target, effectId, options?) -> boolean
-			options = { Duration: number?, Source: any? }
+			options = { Duration: number?, Source: any?, Overrides: { [field]: number }? }
+			-- Overrides replace the config's multipliers for this application (e.g. the
+			-- boss aura's speed buff comes from the boss's own EnemyConfig entry)
 		StatusEffectService:Remove(target, effectId)
 		StatusEffectService:Has(target, effectId) -> boolean
 		StatusEffectService:ClearTarget(target)
@@ -39,7 +41,7 @@ local Attributes = require(Shared.Constants.Attributes)
 local Clock = require(Shared.Utilities.Clock)
 local StatusEffectConfig = require(Shared.Config.StatusEffectConfig)
 
-type ActiveEffect = { ExpiresAt: number, Source: any }
+type ActiveEffect = { ExpiresAt: number, Source: any, Overrides: { [string]: number }? }
 
 local StatusEffectService = {}
 
@@ -111,7 +113,7 @@ function StatusEffectService:Start()
 	end)
 end
 
-function StatusEffectService:Apply(target: any, effectId: string, options: { Duration: number?, Source: any? }?): boolean
+function StatusEffectService:Apply(target: any, effectId: string, options: { Duration: number?, Source: any?, Overrides: { [string]: number }? }?): boolean
 	local definition = StatusEffectConfig.Get(effectId)
 	if definition == nil then
 		warn(`[StatusEffectService] unknown effect {effectId}`)
@@ -151,8 +153,9 @@ function StatusEffectService:Apply(target: any, effectId: string, options: { Dur
 			existing.ExpiresAt = math.max(existing.ExpiresAt, now + duration)
 		end
 		existing.Source = options and options.Source
+		existing.Overrides = options and options.Overrides
 	else
-		effects[effectId] = { ExpiresAt = now + duration, Source = options and options.Source }
+		effects[effectId] = { ExpiresAt = now + duration, Source = options and options.Source, Overrides = options and options.Overrides }
 	end
 	publish(target)
 	return true
@@ -193,8 +196,12 @@ local function product(target: any, field: string): number
 	local result = 1
 	for effectId, effect in effects do
 		if effect.ExpiresAt > now then
-			local definition = StatusEffectConfig.Get(effectId)
-			local value = definition and (definition :: any)[field]
+			local overrides = effect.Overrides
+			local value = overrides and overrides[field]
+			if value == nil then
+				local definition = StatusEffectConfig.Get(effectId)
+				value = definition and (definition :: any)[field]
+			end
 			if value ~= nil then
 				result *= value
 			end

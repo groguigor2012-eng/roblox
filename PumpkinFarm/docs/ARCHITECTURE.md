@@ -267,12 +267,12 @@ Players knocked out during a wave are revived at WaveComplete. Outside waves the
 
 | Enemy | Movement | Behaviour |
 |---|---|---|
-| Zombie Farmer (Grunt) / Zombie Sprout | Humanoid + Navigator | crops > players in aggro > sentries > core; attacks blocking defenses |
-| Zombie Mole (Breacher) | Humanoid + MoverRig underground | StateMachine `Idle → SelectingTarget → EnteringUnderground → UndergroundTraversal → Resurfacing → AttackingCrop → Retargeting`, plus `Combat` and `Dying` (below) |
-| Blighted Scarecrow (Leaper) | Humanoid + ballistic leap | StateMachine `Chasing → LeapWindup → Leaping → Landing`. Leaps when a barricade blocks the way or the target is 10–38 studs away. The landing spot is checked with a ground raycast and telegraphed. Landing damages and stuns for 2 s (StunService). |
+| Zombie Farmer (Grunt) / Zombie Sprout | Humanoid + Navigator | configurable `TargetPriority` (crops > players in aggro > sentries > core > barricades); attacks any defense blocking its path |
+| Zombie Mole (Breacher) | Humanoid + MoverRig underground | 10-state StateMachine `Idle → SelectingTarget → EnteringUnderground → UndergroundTraversal → SearchingSurfaceRoute → Resurfacing → AttackingCrop → Retargeting`, plus `Interrupted` and `Dying` (below); per-state think rates |
+| Blighted Scarecrow (Leaper) | Humanoid + ballistic leap | StateMachine `Chasing → LeapWindup → Leaping → Landing`. Leaps when a barricade or a wall (fence, rock) blocks the way, or the target is 10–38 studs away; 6 s cooldown. The landing spot is checked with a ground raycast and telegraphed. Landing damages and stuns for 2 s (StunService). |
 | Plague Crow (Air) | MoverRig (AlignPosition) | StateMachine `Retargeting → Cruising → Diving → Stealing → Escaping`. Keeps altitude with a ground raycast and climbs over obstacles found by a forward raycast. Steals a crop and flies to the nearest edge. Pecks Anchored crops and the core. Shooting it down returns a ripe crop to the chest. |
 | Witch (Spawner) | Humanoid + Navigator | holds a 24–44 stud band from the nearest player and separates from other witches. Throws ballistic slowing potions (ProjectileSystem, gravity, target lead). Summons 2 Sprouts every 12 s, up to 4 alive. |
-| Cursed Harvester (Boss) | Humanoid + Navigator | 3 s anchored intro, then hunts defenses within 70 studs, then crops, then the core. Crushes barricades within 11 studs instantly. Sweep attack every 5 s. Aura pulse every 0.5 s (`BossAura`: speed ×1.35, attack speed ×1.2) within 35 studs. Enrages below 30 %. Drives the boss HUD attributes. |
+| Cursed Harvester (Boss) | Humanoid + Navigator | 3 s anchored intro, then hunts defenses within 70 studs, then crops, then the core. Crushes barricades instantly (within 11 studs, or any it would hit). Sweep attack every 5 s. Aura pulse every 0.5 s (`BossAura`: speed ×1.35, attack speed ×1.2) within 35 studs. Enrages below 30 %. Drives the boss HUD attributes. |
 
 **Mole underground traversal.** `UndergroundRouter.ForArena` makes a 4-stud grid over the arena
 bounds. A cell is diggable if a downward raycast against `Map/Ground` hits a part with
@@ -281,7 +281,10 @@ protected). Probing is lazy and cached per match. A* uses octile distance, bans 
 between bedrock cells, and is bounded by `MaxRouteExpansions`. The route is then string-pulled
 with a check that treats the tunnel as nearly one cell wide. Fences and barricades are not in
 `Ground`, so tunnels pass under the outer defenses. The resurface point is a diggable cell 3.5–7.5
-studs from the crop that is clear of defenses (box query). While buried, the mole is
+studs from the crop with clear headroom (box query against defenses, props, rocks, the core and
+the chest). On arrival `SearchingSurfaceRoute` re-validates the exit; if it was blocked in the
+meantime the mole digs a short detour to another valid point (up to 3 attempts) before rising
+vertically. If its crop disappears mid-tunnel it retargets and re-plans from where it is. While buried, the mole is
 Ghost-collided and invisible, has a dirt mound welded above it, cannot be hit by melee or
 sentries, and takes ×0.5 damage from area magic. A mole that cannot tunnel (target surrounded by
 bedrock) fights on the surface. On death it is reset to a visible surface state.

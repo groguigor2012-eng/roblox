@@ -205,6 +205,19 @@ function EnemyBase:Update(now: number, dt: number)
 	self:Think(now, dt)
 end
 
+-- State-specific think rates: AIScheduler reads UpdateInterval every time it
+-- reschedules, so switching it on a state change takes effect on the next think.
+-- Rates come from definition.StateUpdateIntervals[state] (fallback UpdateInterval).
+function EnemyBase:BindStateUpdateIntervals(machine: any)
+	local intervals = self.Definition.StateUpdateIntervals
+	if intervals == nil then
+		return
+	end
+	self.Janitor:Add(machine.StateChanged:Connect(function(newState: string)
+		self.UpdateInterval = intervals[newState] or self.Definition.UpdateInterval or 0.2
+	end))
+end
+
 function EnemyBase:Think(_now: number, _dt: number)
 	error(`[EnemyBase] {self.EnemyId} must implement Think`)
 end

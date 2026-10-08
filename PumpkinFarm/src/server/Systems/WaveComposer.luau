@@ -8,11 +8,13 @@
 	so it is unit-tested headlessly (tests/specs/wave_spec.luau).
 
 	Algorithm:
-		1. total count from DifficultyService (wave curve, players, Continue density)
+		1. total count (slots) and threat budget from DifficultyService (wave curve,
+		   players, Continue density)
 		2. special share of the wave (grows per wave and per Continue level)
 		3. special slots are filled by weighted picks among unlocked archetypes, with
-		   weights boosted by the Continue special-chance multiplier and capped by each
-		   archetype's MaxShare / MaxPerWave
+		   weights boosted by the Continue special-chance multiplier, capped by each
+		   archetype's MaxShare / MaxPerWave, and only while the remaining budget pays
+		   for the pick plus a grunt for every slot still to fill
 		4. remaining slots are grunts
 		5. order: frontline shuffled; backline archetypes (Witch) are only placed after
 		   the FrontlineLead fraction so they arrive behind the horde
@@ -22,7 +24,8 @@
 
 	API:
 		WaveComposer.Compose(wave, context, rng, difficulty) -> Plan
-			Plan = { Wave, IsBoss, Entries: { enemyId }, SpawnInterval, BurstSize, Counts }
+			Plan = { Wave, IsBoss, Entries: { enemyId }, SpawnInterval, BurstSize, Counts,
+			         Budget, Threat }
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -39,6 +42,8 @@ export type Plan = {
 	SpawnInterval: number,
 	BurstSize: number,
 	Counts: { [string]: number },
+	Budget: number,
+	Threat: number,
 }
 
 local WaveComposer = {}
@@ -49,6 +54,9 @@ function WaveComposer.Compose(wave: number, context: any, rng: Random, difficult
 	local specialShare = difficulty:GetSpecialShare(wave, level)
 	local specialMultiplier = difficulty:GetSpecialWeightMultiplier(level)
 	local specialSlots = math.floor(total * specialShare + 0.5)
+	local budget = difficulty:GetThreatBudget(wave, context)
+	local gruntCost = WaveConfig.GruntCost
+	local spent = 0
 
 	-- Stable archetype order keeps the plan deterministic for a given seed.
 	local archetypeIds = TableUtil.Keys(WaveConfig.Archetypes)
@@ -70,9 +78,12 @@ function WaveComposer.Compose(wave: number, context: any, rng: Random, difficult
 	local frontline: { string } = {}
 	local backline: { string } = {}
 	for _ = 1, specialSlots do
+		-- After this pick, (total - picked) slots still need at least a grunt each.
+		local reserve = (total - (#frontline + #backline) - 1) * gruntCost
 		local available = {}
 		for _, enemyId in unlocked do
-			if (counts[enemyId] or 0) < caps[enemyId] then
+			local cost = WaveConfig.Archetypes[enemyId].Cost
+			if (counts[enemyId] or 0) < caps[enemyId] and spent + cost + reserve <= budget then
 				table.insert(available, enemyId)
 			end
 		end
@@ -88,6 +99,7 @@ function WaveComposer.Compose(wave: number, context: any, rng: Random, difficult
 			break
 		end
 		counts[choice] = (counts[choice] or 0) + 1
+		spent += WaveConfig.Archetypes[choice].Cost
 		if WaveConfig.Archetypes[choice].Backline then
 			table.insert(backline, choice)
 		else
@@ -100,6 +112,7 @@ function WaveComposer.Compose(wave: number, context: any, rng: Random, difficult
 		table.insert(frontline, WaveConfig.GruntEnemyId)
 	end
 	counts[WaveConfig.GruntEnemyId] = total - placed
+	spent += (total - placed) * gruntCost
 
 	TableUtil.Shuffle(frontline, rng)
 	local entries = frontline
@@ -122,6 +135,8 @@ function WaveComposer.Compose(wave: number, context: any, rng: Random, difficult
 		SpawnInterval = difficulty:GetSpawnInterval(wave, level),
 		BurstSize = difficulty:GetBurstSize(wave),
 		Counts = counts,
+		Budget = budget,
+		Threat = spent,
 	}
 end
 

@@ -51,6 +51,9 @@ with its full source in [phase2/PHASE2.md](phase2/PHASE2.md).
 
 ## Phase 4: Combat, AI, defenses and waves
 
+The enemy AI and wave spawning deliverable (as briefed for Phase 3) is written up with its full
+source in [phase3/PHASE3.md](phase3/PHASE3.md).
+
 | Area | Files |
 |---|---|
 | Combat | `Weapon`, `MagicStaff`, `ReaperScythe`, `WeaponService`, `DamageService`, `ProjectileSystem` |
@@ -104,7 +107,7 @@ Review fixes found while hardening and applied across phases:
 | ✅ 1.2× wave scaling | `DifficultyConfig.Curves` + `DifficultyService` |
 | ✅ Zombie Farmer | `AI/ZombieFarmer` |
 | ✅ Zombie Mole | `AI/ZombieMole` |
-| ✅ Mole underground state machine | 9-state `StateMachine` in `ZombieMole` |
+| ✅ Mole underground state machine | 10-state `StateMachine` in `ZombieMole` |
 | ✅ Mole raycasting | `UndergroundRouter.ForArena` probe, resurface box checks |
 | ✅ Blighted Scarecrow | `AI/BlightedScarecrow` |
 | ✅ Scarecrow stun | `StunService` (non-stacking, immunity, anti-movement) |
