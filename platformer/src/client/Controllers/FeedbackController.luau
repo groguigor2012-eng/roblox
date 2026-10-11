@@ -22,6 +22,7 @@ local HealthUIConfig = require(Shared:WaitForChild("Config"):WaitForChild("Healt
 
 local Client = script.Parent.Parent
 local CharacterLifecycle = require(Client.Utilities.CharacterLifecycle)
+local AudioController = require(script.Parent.AudioController)
 
 local Feedback = HealthUIConfig.DamageFeedback
 local SHAKE_BINDING = "PlatformerCameraShake"
@@ -90,10 +91,14 @@ function FeedbackController.Flash(intensity: number)
 	tween:Play()
 end
 
-local function onDamage(amount: number, maxHealth: number)
+-- `fatal`: the hit killed the character (the death sound covers that one).
+local function onDamage(amount: number, maxHealth: number, fatal: boolean)
 	local fraction = if maxHealth > 0 then math.clamp(amount / maxHealth, 0, 1) else 1
 	FeedbackController.Flash(Feedback.FlashBaseIntensity + fraction * Feedback.FlashIntensityPerHealthFraction)
 	FeedbackController.AddTrauma(Feedback.ShakeBaseTrauma + fraction * Feedback.ShakeTraumaPerHealthFraction)
+	if not fatal then
+		AudioController.Play("Damage")
+	end
 end
 
 local function onSpawn(context: CharacterLifecycle.Context)
@@ -105,7 +110,7 @@ local function onSpawn(context: CharacterLifecycle.Context)
 		previousHealth = health
 		-- A drop that lands exactly on MaxHealth is a MaxHealth change, not damage.
 		if -delta >= Feedback.MinDamage and health < humanoid.MaxHealth then
-			onDamage(-delta, humanoid.MaxHealth)
+			onDamage(-delta, humanoid.MaxHealth, health <= 0)
 		end
 	end)
 end

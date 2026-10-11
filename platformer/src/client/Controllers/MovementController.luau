@@ -41,9 +41,10 @@ local MovementMath = require(Shared:WaitForChild("Math"):WaitForChild("MovementM
 local Types = require(Shared:WaitForChild("Types"))
 
 local Client = script.Parent.Parent
-local CharacterAnimations = require(Client.Utilities.CharacterAnimations)
 local CharacterLifecycle = require(Client.Utilities.CharacterLifecycle)
 local Effects = require(Client.Utilities.Effects)
+local AnimationController = require(script.Parent.AnimationController)
+local AudioController = require(script.Parent.AudioController)
 local FeedbackController = require(script.Parent.FeedbackController)
 
 type MovementState = Types.MovementState
@@ -74,6 +75,10 @@ type CharacterState = {
 	SavedAutoRotate: boolean?,
 	-- Animation played by the running ability; stopped when it ends.
 	AbilityTrack: AnimationTrack?,
+	-- Stops the running ability's looped sound (spin air); called when it ends.
+	StopAbilityLoop: (() -> ())?,
+	-- A double jump happened since the last landing (for its landing accent).
+	DoubleJumpedThisAir: boolean,
 	Rig: Effects.CharacterRig,
 	RayParams: RaycastParams,
 }
@@ -205,6 +210,11 @@ local function endAbility(state: CharacterState)
 	if track and track.IsPlaying then
 		track:Stop(0.1)
 	end
+	local stopLoop = state.StopAbilityLoop
+	state.StopAbilityLoop = nil
+	if stopLoop then
+		stopLoop()
+	end
 	state.Ability = nil
 	state.AbilityToken += 1
 end
@@ -233,6 +243,11 @@ local function humanoidJumpVelocity(humanoid: Humanoid): number
 end
 
 local function onGrounded(state: CharacterState)
+	if state.DoubleJumpedThisAir and isAlive(state) then
+		state.DoubleJumpedThisAir = false
+		Effects.LandingPuff(state.Rig)
+		AudioController.Play("DoubleJumpLanding")
+	end
 	state.AirJumpsUsed = 0
 	state.AirDashesUsed = 0
 	state.PoundUsedThisAir = false
@@ -262,7 +277,9 @@ local function startSpinFloat(state: CharacterState)
 	state.Spinner.Enabled = true
 	state.FloatForce.Force = Vector3.zero
 	state.FloatForce.Enabled = true
-	state.AbilityTrack = CharacterAnimations.Play(context, AnimationConfig.DoubleJumpSpin)
+	state.AbilityTrack = AnimationController.Play(context, AnimationConfig.DoubleJumpSpin)
+	AudioController.Play("SpinWhoosh")
+	state.StopAbilityLoop = AudioController.StartLoop("SpinAir")
 
 	local startedAt = os.clock()
 	local totalTime = math.max(SpinFloat.SpinDuration, SpinFloat.FloatDuration)
@@ -304,6 +321,8 @@ local function doDoubleJump(state: CharacterState)
 		trailTime = math.max(trailTime, SpinFloat.SpinDuration)
 	end
 	Effects.DoubleJumpBurst(state.Rig, trailTime)
+	AudioController.Play("DoubleJump")
+	state.DoubleJumpedThisAir = true
 	report("DoubleJump")
 	if SpinFloat.Enabled then
 		startSpinFloat(state)
@@ -385,6 +404,7 @@ local function tryWallJump(state: CharacterState, now: number): boolean
 		state.AirJumpsUsed = 0
 	end
 	Effects.DoubleJumpBurst(state.Rig)
+	AudioController.Play("WallJump")
 	report("WallJump")
 	return true
 end
@@ -418,8 +438,9 @@ local function tryDash(state: CharacterState): boolean
 	root.CFrame = CFrame.lookAt(root.Position, root.Position + direction)
 	state.DashReadyAt = now + Dash.Cooldown
 	setPlaneVelocity(state, direction * Dash.InitialSpeed)
-	state.AbilityTrack = CharacterAnimations.Play(state.Context, AnimationConfig.DashRoll)
+	state.AbilityTrack = AnimationController.Play(state.Context, AnimationConfig.DashRoll)
 	Effects.DashBurst(state.Rig, Dash.Duration)
+	AudioController.Play("Dash")
 	report("Dash")
 
 	state.AbilityStep = RunService.PreSimulation:Connect(function()
@@ -447,6 +468,7 @@ local function landPound(state: CharacterState, poundId: number, groundPosition:
 	remoteTable.GroundPoundImpact:FireServer(poundId, groundPosition)
 	Effects.Shockwave(groundPosition, GroundPound.Shockwave.Radius)
 	Effects.ImpactBurst(groundPosition)
+	AudioController.PlayAt("GroundPoundImpact", groundPosition)
 	FeedbackController.AddTrauma(GroundPound.CameraShakeTrauma)
 
 	beginAbility(state, "Recovery")
@@ -469,6 +491,8 @@ local function tryGroundPound(state: CharacterState): boolean
 
 	beginAbility(state, "GroundPound") -- interrupts a dash or wall jump
 	state.PoundUsedThisAir = true
+	state.DoubleJumpedThisAir = false -- the pound impact is this landing's sound
+	AudioController.Play("GroundPoundStart")
 	state.PoundId += 1
 	local poundId = state.PoundId
 	report("GroundPoundStart", poundId)
@@ -656,6 +680,8 @@ local function onSpawn(context: CharacterLifecycle.Context)
 		FloatForce = floatForce,
 		SavedAutoRotate = nil,
 		AbilityTrack = nil,
+		StopAbilityLoop = nil,
+		DoubleJumpedThisAir = false,
 		Rig = Effects.CreateCharacterRig(root, feetOffset, context.Cleanup),
 		RayParams = rayParams,
 	}
@@ -695,9 +721,10 @@ local function onImpactEffect(effect: any)
 		return
 	end
 	if effect.SourceUserId ~= Players.LocalPlayer.UserId then
-		-- Our own impact was already shown when it happened.
+		-- Our own impact was already shown and heard when it happened.
 		Effects.Shockwave(effect.Position, effect.Radius)
 		Effects.ImpactBurst(effect.Position)
+		AudioController.PlayAt("GroundPoundImpact", effect.Position)
 	end
 	if type(effect.Broken) == "table" then
 		local broken: { Types.BrokenPartInfo } = {}
@@ -734,7 +761,7 @@ function MovementController.Start()
 	assert(remotes, "MovementController.Init must run before Start")
 	started = true
 
-	CharacterAnimations.Preload({ AnimationConfig.DashRoll, AnimationConfig.DoubleJumpSpin })
+	AnimationController.Preload({ AnimationConfig.DashRoll.AnimationId, AnimationConfig.DoubleJumpSpin.AnimationId })
 	CharacterLifecycle.Register("MovementController", {
 		OnSpawn = onSpawn,
 		OnDied = onDied,

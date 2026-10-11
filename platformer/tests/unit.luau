@@ -210,6 +210,83 @@ test("click versus camera drag", function()
 end)
 
 ------------------------------------------------------------------------------
+H.suite("LocomotionMath: walk/run layer and footsteps")
+
+local LocomotionMath = H.load("shared/Math/LocomotionMath")
+
+test("moving uses hysteresis", function()
+	truthy(not LocomotionMath.IsMoving(0.6, false, 0.8, 0.4), "not started below start speed")
+	truthy(LocomotionMath.IsMoving(0.9, false, 0.8, 0.4), "starts above start speed")
+	truthy(LocomotionMath.IsMoving(0.6, true, 0.8, 0.4), "keeps moving above stop speed")
+	truthy(not LocomotionMath.IsMoving(0.3, true, 0.8, 0.4), "stops below stop speed")
+end)
+
+test("walk/run weights crossfade and always sum to 1", function()
+	local walk, run = LocomotionMath.WalkRunWeights(5, 10, 14)
+	eq(walk, 1)
+	eq(run, 0)
+	walk, run = LocomotionMath.WalkRunWeights(12, 10, 14)
+	near(walk, 0.5, 1e-9)
+	near(run, 0.5, 1e-9)
+	walk, run = LocomotionMath.WalkRunWeights(16, 10, 14)
+	eq(run, 1)
+	eq(walk, 0)
+	for speed = 0, 30 do
+		local w, r = LocomotionMath.WalkRunWeights(speed, 10, 14)
+		near(w + r, 1, 1e-9)
+	end
+	local _, hard = LocomotionMath.WalkRunWeights(14, 14, 14)
+	eq(hard, 1, "zero-width blend switches at the threshold")
+end)
+
+test("playback speed matches ground speed and is clamped", function()
+	eq(LocomotionMath.PlaybackSpeed(16, 16, 1, 0.5, 1.6), 1)
+	eq(LocomotionMath.PlaybackSpeed(8, 16, 1, 0.5, 1.6), 0.5)
+	eq(LocomotionMath.PlaybackSpeed(40, 16, 1, 0.5, 1.6), 1.6, "clamped high")
+	eq(LocomotionMath.PlaybackSpeed(1, 16, 1, 0.5, 1.6), 0.5, "clamped low")
+	eq(LocomotionMath.PlaybackSpeed(16, 16, 2, 0.5, 1.6), 0.5, "taller rig takes longer strides")
+end)
+
+test("footstep stride shrinks the interval as speed rises", function()
+	local footsteps = H.load("shared/Config/AudioConfig").Footsteps
+	local locomotion = H.load("shared/Config/AnimationConfig").Locomotion
+	local function interval(speed)
+		local _, run = LocomotionMath.WalkRunWeights(speed, locomotion.RunBlendStart, locomotion.RunBlendEnd)
+		return LocomotionMath.Blend(footsteps.WalkStride, footsteps.RunStride, run) / speed
+	end
+	local slowWalk, walk, run = interval(4), interval(8), interval(16)
+	truthy(slowWalk > walk and walk > run, "faster movement = faster steps")
+	truthy(run >= 0.2 and run <= 0.45, `running step interval natural ({run} s)`)
+	truthy(walk >= 0.3 and walk <= 0.6, `walking step interval natural ({walk} s)`)
+end)
+
+test("surface lookup falls back to Default", function()
+	local surfaces = { Grass = { "g1" }, Stone = {}, Default = { "d1" } }
+	local map = { Grass = "Grass", Slate = "Stone" }
+	eq(LocomotionMath.SurfaceFor("Grass", map, surfaces), "Grass")
+	eq(LocomotionMath.SurfaceFor("Slate", map, surfaces), "Default", "empty surface")
+	eq(LocomotionMath.SurfaceFor("Neon", map, surfaces), "Default", "unmapped material")
+end)
+
+test("variant picking never repeats when it has a choice", function()
+	eq(LocomotionMath.PickVariant(1, 1, 0.5), 1)
+	for last = 1, 4 do
+		for roll = 0, 0.99, 0.07 do
+			local index = LocomotionMath.PickVariant(4, last, roll)
+			truthy(index ~= last and index >= 1 and index <= 4, `last {last} roll {roll} -> {index}`)
+		end
+	end
+	eq(LocomotionMath.PickVariant(3, nil, 0), 1)
+	eq(LocomotionMath.PickVariant(3, nil, 0.999), 3)
+end)
+
+test("shard streak rises in semitones and caps", function()
+	eq(LocomotionMath.ChainSpeed(0, 1, 7), 1)
+	near(LocomotionMath.ChainSpeed(12, 1, 12), 2, 1e-9, "an octave after 12 steps")
+	eq(LocomotionMath.ChainSpeed(50, 1, 7), LocomotionMath.ChainSpeed(7, 1, 7), "capped")
+end)
+
+------------------------------------------------------------------------------
 H.suite("HealthMath")
 
 local function hearts(health, maxHealth)
@@ -714,6 +791,29 @@ test("spin-float and attack tuning are coherent", function()
 	truthy(attack.Cooldown >= AttackMathModule.TotalTime(attack.Fallback), "fallback punch cannot overlap itself")
 	truthy(attack.TriggerMode == "Click" or attack.TriggerMode == "Press")
 	truthy(attack.BlockedStates.Dead, "never attacks while dead")
+end)
+
+test("animation and audio config are coherent", function()
+	local locomotion = H.load("shared/Config/AnimationConfig").Locomotion
+	truthy(locomotion.MoveStartSpeed > locomotion.MoveStopSpeed, "hysteresis band")
+	truthy(locomotion.RunBlendEnd >= locomotion.RunBlendStart)
+	truthy(locomotion.MinPlaybackSpeed > 0 and locomotion.MaxPlaybackSpeed >= locomotion.MinPlaybackSpeed)
+	truthy(locomotion.Run.ReferenceSpeed >= locomotion.Walk.ReferenceSpeed)
+	local AudioConfig = H.load("shared/Config/AudioConfig")
+	local footsteps = AudioConfig.Footsteps
+	truthy(footsteps.WalkVolume < footsteps.RunVolume, "walking is quieter than running")
+	truthy(footsteps.DefaultLoop.WalkVolume < footsteps.DefaultLoop.RunVolume)
+	truthy(footsteps.Surfaces.Default ~= nil, "a Default surface exists")
+	for material, surface in footsteps.MaterialSurfaces do
+		truthy(footsteps.Surfaces[surface] ~= nil, `{material} maps to a known surface`)
+		truthy(roblox.Enum.Material[material] ~= nil, `{material} is a real Enum.Material`)
+	end
+	for key, entry in AudioConfig.Sounds do
+		truthy(entry.SoundId == "" or string.match(entry.SoundId, "^rbxasset://sounds/") or string.match(entry.SoundId, "^rbxassetid://%d+$"), `{key} id format`)
+		truthy(entry.Volume >= 0 and entry.Volume <= 1, `{key} volume`)
+		truthy(entry.Voices >= 1 and entry.Voices <= 8, `{key} voices bounded`)
+		truthy(entry.Scope ~= "UI" or entry.Group == "Interface", `{key} UI sounds use the Interface group`)
+	end
 end)
 
 test("hearts and remotes", function()

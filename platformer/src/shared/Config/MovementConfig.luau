@@ -57,6 +57,8 @@ MovementConfig.DoubleJump = table.freeze({
 		ParticleSize = NumberSequence.new(0.7, 0),
 		ParticleSpeed = NumberRange.new(6, 12),
 		ParticleTransparency = NumberSequence.new(0.1, 1),
+		-- Dust puff when landing after a double jump.
+		LandingDustCount = 10,
 	}),
 })
 

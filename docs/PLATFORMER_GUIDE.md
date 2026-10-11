@@ -66,9 +66,11 @@ rojo build platformer.project.json -o Platformer.rbxl
 | `…/Config/HealthUIConfig` | Heart layout and style, flash and shake | — |
 | `…/Config/DataConfig` | DataStore name, schema version, retry, session lock, autosave, kick messages | — |
 | `…/Shared/Types` | Shared types and every remote payload | — |
-| `…/Config/AnimationConfig` | Every custom animation id (attack, spin pose, dash roll), with priority, speed and fade | — |
+| `…/Config/AnimationConfig` | Every animation: ability/attack entries and the walk/run/idle layer (ids, priorities, speeds, fades, thresholds, eligible states, markers) | — |
+| `…/Config/AudioConfig` | Every sound: ids, volume, speed, pitch variance, rolloff, cooldowns, voices, scope; footstep surfaces; mixer | — |
 | `…/Config/CombatConfig` | Right-click attack: input, trigger mode, cooldown, blocked states, fallback punch | — |
 | `…/Shared/Math/MovementMath` | Pure maths for curves, directions, wall launch, descent, spin profile and float lift (unit-tested) | MovementConfig |
+| `…/Shared/Math/LocomotionMath` | Pure walk/run blending, timewarp, hysteresis, footstep stride, surface lookup, pickup streak pitch (unit-tested) | — |
 | `…/Shared/Math/AttackMath` | Pure fallback-punch pose curve and click-versus-drag test (unit-tested) | — |
 | `…/Shared/Math/HealthMath` | Pure heart formula (unit-tested) | — |
 | `…/Shared/Utilities/ResourceCleanup` | Releases connections, instances, threads and callbacks together | — |
@@ -92,7 +94,8 @@ rojo build platformer.project.json -o Platformer.rbxl
 | `StarterPlayer/StarterPlayerScripts/Client/Bootstrap` (LocalScript) | Waits for and verifies remotes, then starts controllers | all controllers |
 | `…/Client/Utilities/CharacterLifecycle` | Per-spawn context and cleanup group; spawn/died/despawn fan-out | ResourceCleanup |
 | `…/Client/Utilities/Effects` | Trails, bursts, shockwave, debris, pickup ghost, floating text | Configs |
-| `…/Client/Utilities/CharacterAnimations` | Loads and plays AnimationConfig entries on the character's Animator; preloads ids and falls back if one fails | Lifecycle |
+| `…/Client/Controllers/AnimationController` | The only animation player: loads and caches entries, walk/run/idle layer, marker dispatch (replaces the former `Utilities/CharacterAnimations`) | Lifecycle, injected movement state |
+| `…/Client/Controllers/AudioController` | The only gameplay audio: pooled sounds, mixer, footsteps for nearby characters, default-sound coordination | Lifecycle, Effects, AnimationController, injected movement state |
 | `…/Client/Controllers/MovementController` | Input, ability state machine (incl. spin-float), local effects, movement remotes | Lifecycle, Animations, Effects, Feedback |
 | `…/Client/Controllers/AttackController` | Right-click/R1/touch attack: Animator track or procedural punch | Lifecycle, Animations, MovementController |
 | `…/Client/Controllers/CollectibleVisualController` | Shared spin/bob loop, per-player hiding, pickup requests | Lifecycle, Effects |
@@ -198,6 +201,8 @@ empty, and each has a working fallback:
 
 | Entry | Plays | If empty or unloadable |
 |---|---|---|
+| `AnimationConfig.Locomotion.Walk` / `.Run` | walk/run layer (speed-matched, blended) | the walk/run asset the character's own `Animate` script loads: Roblox's default, or the player's avatar animation pack |
+| `AnimationConfig.Locomotion.Idle` | idle | Roblox's `Animate` idle (setting a custom idle overrides `/e` emotes while standing) |
 | `AnimationConfig.Attack` | right-click attack (wind-up, hit, recovery) | procedural right-arm punch, **visible only to you** (see §7) |
 | `AnimationConfig.DoubleJumpSpin` | pose held during the spin (looped) | the spin still happens; the normal fall animation plays |
 | `AnimationConfig.DashRoll` | dash roll (moved here from `MovementConfig.Dash.RollAnimationId`) | dash with trail and dust only |
@@ -214,6 +219,18 @@ To add one:
    used for the rest of the session.
 
 An R15 animation does not play on R6 characters, and an R6 one does not play on R15.
+
+**Animation events (markers).** Add these in the Animation Editor (right-click the timeline → Add
+Animation Event). Only listed names are listened for, and assets without them fall back:
+
+| Event | On | Effect | Without it |
+|---|---|---|---|
+| `Footstep` | walk and run | one footstep sound per event | footsteps are spaced by distance travelled |
+| `AttackImpact` | attack | swing sound on the contact frame | swing sound `CombatConfig.Attack.SwingSoundDelay` after the start |
+
+Dash, landing and ground-pound sounds always follow the gameplay event itself: the input, the
+detected landing, the detected impact. Those are more exact than animation timing, and they don't
+depend on an asset.
 
 ### 4.8 Demo course
 `GameConfig.DemoCourse.Mode` is `"Always"`, so a blank place is playable straight away. Switch it
@@ -323,8 +340,8 @@ item, which covers any race.
 |---|---|---|
 | Strict type check against the Roblox API, both Luau solvers | `luau-lsp analyze --platform=roblox --sourcemap=sourcemap.json --definitions=@roblox=globalTypes.d.luau $(find platformer/src -name '*.luau')` (add `--no-flags-enabled` for the old solver) | 0 errors, 0 lint warnings |
 | Rojo build | `rojo build platformer.project.json -o Platformer.rbxl` | builds |
-| Unit tests (Lune) | `platformer/tests/run.sh` | 62 passed |
-| Contract checks (Lune) | same script | 10 passed |
+| Unit tests (Lune) | `platformer/tests/run.sh` | 70 passed |
+| Contract checks (Lune) | same script | 12 passed |
 
 The unit tests cover:
 * curve endpoints, monotonicity and clamping; dash speed endpoints and midpoints; descent cap
@@ -381,6 +398,19 @@ fired and handled in the right direction.
 - [ ] Die mid-punch, then respawn: the arm is in its normal pose. Test with an R6 avatar too (Game Settings → Avatar → R6): the arm punches, with no elbow or waist motion.
 - [ ] With a custom `AnimationConfig.Attack` id: it plays instead of the fallback, and the other client sees it. With a bogus id: one `AnimationUnavailable` warning, then the fallback.
 
+**Animation and audio** (see §8 for what's silent until you supply assets)
+- [ ] Standing still: Roblox's idle, no footsteps. Push the gamepad stick halfway (or set `StarterPlayer.CharacterWalkSpeed` to 8): walk animation with quiet, slower steps. Full speed: run with louder, faster steps. Moving between them blends with no pop, and the feet don't slide.
+- [ ] Jumping, falling and landing stop the footsteps at once; they restart on the first stride after landing.
+- [ ] Mid-run, dash / double-jump spin / ground pound / wall jump: the walk/run layer fades out and the ability shows; afterwards walking resumes normally.
+- [ ] Ground jump: Roblox's jump sound plays once. Double jump: higher-pitched jump plus a whoosh as the spin starts. Landing after it: a thud and a dust puff. Wall jump: a spring-like jump sound. Dash: a short rush.
+- [ ] Ground pound: a rush on startup, and a deep thud on the same frame as the shockwave. The other client hears your impact.
+- [ ] Right-click: one swing whoosh per attack, on the strike, even when spam-clicking. There is never a hit sound (nothing can be hit).
+- [ ] Shard and Power Orb sounds (once you supply ids) only play after the server confirms the pickup. A quick streak of shards rises in pitch. Clicking a collected item never plays anything.
+- [ ] Respawn 5 times: in the Explorer, the local `HumanoidRootPart` has one set of pooled sounds, and `SoundService.PlatformerAudio` exists once.
+- [ ] Another player walking near you: you hear their footsteps (default loop retuned by their speed), and you don't hear them when they're more than about 90 studs away.
+- [ ] Test with R6 and R15 avatars (Game Settings → Avatar).
+- [ ] Every id you add to `AnimationConfig`/`AudioConfig` plays, and no `AnimationUnavailable`/`SoundUnavailable` warning appears in the output.
+
 **Progression**
 - [ ] A new player has `Shards 0 / PowerOrbs 0`. Shards and orbs update the correct leaderstat.
 - [ ] Re-join (with API access on): totals restored, collected items stay hidden, and **the other client still sees them**.
@@ -420,8 +450,8 @@ fired and handled in the right direction.
   * The right mouse button is observed, not bound, the same way jump keys are. That keeps
     right-drag camera turning untouched. A `Click` trigger mode makes sure a camera drag never
     attacks.
-* Both play animations through the new `CharacterAnimations` loader on the character's own
-  Animator. The dash roll uses it too, and was moved into `AnimationConfig`.
+* Both play animations through `AnimationController` (see §8) on the character's own Animator.
+  The dash roll uses it too, and was moved into `AnimationConfig`.
 
 ### Tuning cheat-sheet
 
@@ -465,3 +495,132 @@ Today there is no hitbox, damage or remote. To add combat securely:
 3. On the server, check a server-side cooldown and that the attacker is alive. Then find targets
    yourself with a spatial query around the server's view of the character, and apply damage
    there. This mirrors how ground-pound impacts are validated.
+
+## 8. Character animation and sound design
+
+### What already existed, and what was changed
+* **`Animate`** (Roblox's default LocalScript, inserted into every character) plays idle, walk,
+  run, jump, fall, climb, swim, sit, emotes and tool animations, using the assets stored in its
+  `walk`/`run`/`idle`/... values.
+  * It is **not replaced or edited**. It keeps playing underneath at Core priority.
+  * `AnimationController` reads its walk and run assets at spawn and plays them on a
+    higher-priority layer, under its own control. So there's one authority for walk/run, and
+    Animate's copy underneath is fully overridden.
+* **`RbxCharacterSounds`** (Roblox's default; source read from the client build) creates
+  `Running`, `Jumping`, `Landing`, `Died` and similar sounds under every `HumanoidRootPart`, on every
+  client. `Running` is a looped footstep file that it switches on and off each physics step.
+  `AudioController` only changes it where it replaces it:
+  * no footstep sounds configured (default): the `Running` loop is kept, and its
+    `PlaybackSpeed`/`Volume` are retuned by speed. `RbxCharacterSounds` never writes those two
+    properties.
+  * footstep sounds configured: `Running` is muted, so steps never play twice.
+  * `Sounds.Jump` or `Sounds.Death` configured: `Jumping` or `Died` is muted.
+  * `Landing` is left alone. It only plays on very hard falls (over 75 studs/s), so it doesn't
+    overlap the double-jump landing sound.
+* **Ability animations** were already played through one loader, which `AnimationController`
+  replaces. There was no other animation or sound system to merge.
+
+### Animation layering
+| Priority | Who | What |
+|---|---|---|
+| Core | `Animate` | everything Roblox animates by default (underneath) |
+| Idle | `AnimationController` | custom idle, only if `Locomotion.Idle.AnimationId` is set |
+| Movement | `AnimationController` | walk/run layer: blended by speed, timewarped to ground speed, only in `Locomotion.ActiveStates` (Grounded) |
+| Action | `AnimationController` (called by Movement/Attack) | dash roll, spin pose, attack |
+
+* Abilities therefore always win over walking or running.
+* The walk/run layer also fades itself out whenever the movement state leaves `Grounded`: in the
+  air, while dashing, pounding, spinning or wall-jumping, while landing, and when dead. Animate's
+  jump and fall show in the air, and walking resumes on landing.
+* One `PreAnimation` update runs for the local character only. Weight and speed changes under
+  0.03 aren't re-applied.
+* Tracks are loaded once per character and destroyed with it.
+* **Assumption:** this relies on Roblox's default walk and run assets using Core priority. If an
+  avatar animation pack ships them at Movement priority, set `Locomotion.Walk/Run.Priority` to
+  `Action` (abilities still override them, because they start later).
+* **R6:** Animate's R6 walk and run use the same asset, so walk and run look alike but are still
+  speed-matched. The size scale is 1. **R15:** scaled avatars are timewarped by
+  `HipHeight / 2`.
+
+### Footsteps
+* Steps only play while grounded (`Running` state), moving, alive, and, for you, in
+  `Footsteps.ActiveStates`. Climbing, swimming, falling, dashing and dying are all silent.
+* **Timing:** a `Footstep` event on the walk or run animation plays a step on that frame, and
+  pauses the fallback for 0.6 s. The fallback places one step every
+  `stride = blend(WalkStride 3.2, RunStride 5.0)` studs of travel. At 8 studs/s that's about
+  0.4 s between steps; at 16 studs/s about 0.31 s.
+* **Surface:**
+  * For you, `Humanoid.FloorMaterial` picks the surface.
+  * For other players, one downward ray per step (not per frame) picks it.
+  * `MaterialSurfaces` maps materials to `Grass`, `Dirt`, `Stone`, `Wood`, `Metal` or `Default`.
+    A surface with no sounds falls back to `Default`.
+  * Each step picks a random variant, never the same one twice in a row, with ±8% pitch.
+* **Other players** within 90 studs are tracked locally from their replicated movement, so their
+  footsteps cost no network traffic. Volume falls off between 5 and 70 studs.
+
+### Sound map: event → trigger → asset
+`BUILTIN` = a sound file that ships inside every Roblox client. These are the exact paths
+Roblox's own `RbxCharacterSounds` plays, verified against its source. They're reused as recoloured
+placeholders (`PlaybackSpeed`, `StartTime`, `MaxDuration`). Rows marked **supply** are fully wired
+but silent until you add an id.
+
+| `AudioConfig.Sounds` key | Trigger (real gameplay event) | Scope | Asset |
+|---|---|---|---|
+| — idle | none (no repetitive idle sound) | — | — |
+| footsteps (`Footsteps.Surfaces`) | grounded movement, or the `Footstep` event | each character | **supply** (until then: Roblox's footstep loop, retuned by speed) |
+| `Jump` | Humanoid enters `Jumping` (any nearby player) | character | empty: Roblox's default jump plays |
+| `DoubleJump` | air jump performed | your character | BUILTIN `action_jump.mp3` ×1.4 |
+| `SpinWhoosh` | spin starts | your character | BUILTIN `action_falling.ogg` slice ×1.8 |
+| `SpinAir` | loop for the spin's duration, stopped by `endAbility` | your character | **supply** (optional) |
+| `DoubleJumpLanding` | first landing after a double jump (plus dust puff) | your character | BUILTIN `action_jump_land.mp3` ×1.1 |
+| `Dash` | dash starts | your character | BUILTIN `action_falling.ogg` slice ×2.6 |
+| `WallJump` | wall jump performed | your character | BUILTIN `action_jump.mp3` ×1.15 |
+| `GroundPoundStart` | pound starts | your character | BUILTIN `action_falling.ogg` slice ×1.25 |
+| `GroundPoundImpact` | landing detected (with the shockwave); others via the server's `ImpactEffect` | world position | BUILTIN `action_jump_land.mp3` ×0.55 |
+| `AttackSwing` | `AttackImpact` event, or the strike time | your character | BUILTIN `action_falling.ogg` slice ×3.2 |
+| `ShardCollect` | server-confirmed `CollectResult` (pitch rises in streaks) | UI (2D) | **supply** |
+| `PowerOrbCollect` | server-confirmed `CollectResult` | UI (2D) | **supply** |
+| `Damage` | health drop that isn't fatal | your character | **supply** (optional) |
+| `Death` | Humanoid `Died` (any nearby player) | character | empty: Roblox's default death sound plays |
+| `Respawn` | your character spawns again | UI (2D) | **supply** (optional) |
+
+**Not implemented, on purpose:**
+* **Somersault:** this project has no somersault move. The double-jump move is a yaw *spin*,
+  covered by `SpinWhoosh`/`SpinAir`. Nothing was invented for it; ask if you want a somersault
+  ability added.
+* **Confirmed melee hit:** the attack is animation-only, with no server hit confirmation (as you
+  specified earlier). A hit sound must only ever follow a server-confirmed hit, so there is
+  nothing to trigger it yet. When combat is added (see §7), add a `MeleeHit` entry and play it
+  from the server's confirmation event, never from the animation.
+
+**Multiplayer and stacking:**
+* Client-played sounds don't replicate, so ability sounds are heard by the player who uses them.
+* Footsteps, jumps and deaths of other players are generated locally from their replicated
+  movement. Pound impacts arrive with the server's existing `ImpactEffect` broadcast. No new
+  remotes were added.
+* Every sound routes through `SoundService.PlatformerAudio` (with a compressor) and its
+  `Footsteps`/`Actions`/`Interface` groups.
+* Each key has a cooldown and a bounded voice pool, so rapid events never stack unboundedly.
+
+### Supplying audio
+1. Use audio you own, or audio from the Creator Store that's marked free to use in your
+   experience.
+2. Paste `"rbxassetid://<number>"` into the entry's `SoundId` (or a footstep surface list,
+   e.g. `Grass = { "rbxassetid://1", "rbxassetid://2" }`, with 2–4 variants each).
+3. Ids that fail to load are reported once (`SoundUnavailable`) and stay silent.
+4. Balance the mix with each entry's `Volume` and `AudioConfig.Mix`.
+5. Keep walking quieter than running (`WalkVolume < RunVolume`; a unit test enforces this).
+
+### Asset inventory
+| Asset | Config key | Status |
+|---|---|---|
+| Walk / run animation | `AnimationConfig.Locomotion.Walk/Run.AnimationId` | optional; defaults to the character's own Animate assets (existing, rig-correct) |
+| Idle animation | `AnimationConfig.Locomotion.Idle.AnimationId` | optional; Animate's idle |
+| Attack animation | `AnimationConfig.Attack.AnimationId` | optional; procedural punch (local-only) |
+| Spin pose | `AnimationConfig.DoubleJumpSpin.AnimationId` | optional |
+| Dash roll | `AnimationConfig.DashRoll.AnimationId` | optional |
+| Footsteps ×6 surfaces | `AudioConfig.Footsteps.Surfaces.*` | **supply** for surface sounds; default loop until then |
+| Shard / Power Orb chimes | `AudioConfig.Sounds.ShardCollect/PowerOrbCollect.SoundId` | **supply** (recommended first) |
+| Spin air, damage, respawn | `AudioConfig.Sounds.SpinAir/Damage/Respawn.SoundId` | **supply** (optional) |
+| Jump / death replacements | `AudioConfig.Sounds.Jump/Death.SoundId` | optional; Roblox defaults until then |
+| Double jump, spin whoosh, double-jump landing, dash, wall jump, pound start/impact, attack swing | `AudioConfig.Sounds.*.SoundId` | working BUILTIN placeholders; replace for polish |

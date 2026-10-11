@@ -26,6 +26,10 @@ CombatConfig.Attack = table.freeze({
 	ClickMaxDragPixels = 8,
 	-- Seconds from one attack's start until the next may start.
 	Cooldown = 0.45,
+	-- Swing sound timing for a custom animation WITHOUT an "AttackImpact"
+	-- event (seconds after the attack starts). With the event, the sound
+	-- plays on it; the procedural punch plays it as the strike begins.
+	SwingSoundDelay = 0.1,
 	-- Movement states (Types.MovementState) in which attacking is ignored.
 	BlockedStates = table.freeze({
 		Dead = true,

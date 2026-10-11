@@ -34,6 +34,7 @@ local Types = require(Shared:WaitForChild("Types"))
 local Client = script.Parent.Parent
 local CharacterLifecycle = require(Client.Utilities.CharacterLifecycle)
 local Effects = require(Client.Utilities.Effects)
+local AudioController = require(script.Parent.AudioController)
 
 type Visual = {
 	Instance: PVInstance,
@@ -196,10 +197,14 @@ end
 
 local function playPickup(visual: Visual, result: Types.CollectResult)
 	local position = visual.Instance:GetPivot().Position
-	local currency = result.CurrencyType
+	local currency: Types.CurrencyType? = result.CurrencyType
 	local color = if currency then VisualConfig.Colors[currency] else Color3.new(1, 1, 1)
 	Effects.PickupGhost(visual.Instance)
 	Effects.PickupBurst(position, color)
+	if currency then
+		-- Only reached from a server-confirmed CollectResult.
+		AudioController.PlayCollect(currency)
+	end
 	if VisualConfig.FloatingText and currency and result.Amount then
 		local name = VisualConfig.DisplayNames[currency]
 		local label = if result.Amount == 1 then name else name .. "s"

@@ -18,6 +18,7 @@ local CONFIGS = {
 	DataConfig = H.load("shared/Config/DataConfig"),
 	AnimationConfig = H.load("shared/Config/AnimationConfig"),
 	CombatConfig = H.load("shared/Config/CombatConfig"),
+	AudioConfig = H.load("shared/Config/AudioConfig"),
 }
 
 -- Tables indexed by runtime keys (iterated or looked up by a variable): treat as leaves.
@@ -33,6 +34,15 @@ local MAP_TABLES = {
 	["AnimationConfig.Attack"] = true,
 	["AnimationConfig.DoubleJumpSpin"] = true,
 	["AnimationConfig.DashRoll"] = true,
+	["AnimationConfig.Locomotion.Walk"] = true,
+	["AnimationConfig.Locomotion.Run"] = true,
+	["AnimationConfig.Locomotion.Idle"] = true,
+	["AnimationConfig.Locomotion.ActiveStates"] = true,
+	-- Sound keys are checked against AudioController calls below.
+	["AudioConfig.Sounds"] = true,
+	["AudioConfig.Footsteps.Surfaces"] = true,
+	["AudioConfig.Footsteps.MaterialSurfaces"] = true,
+	["AudioConfig.Footsteps.ActiveStates"] = true,
 }
 
 local sources = H.sources()
@@ -144,13 +154,54 @@ end)
 H.test("records passed whole are fully consumed by their reader", function()
 	local readers = {
 		{ CONFIGS.CombatConfig.Attack.Fallback, "platformer/src/shared/Math/AttackMath.luau", "pose" },
-		{ CONFIGS.AnimationConfig.Attack, "platformer/src/client/Utilities/CharacterAnimations.luau", "entry" },
+		{ CONFIGS.AnimationConfig.Attack, "platformer/src/client/Controllers/AnimationController.luau", "entry" },
+		{ CONFIGS.AudioConfig.Sounds.Dash, "platformer/src/client/Controllers/AudioController.luau", "entry" },
 	}
 	for _, reader in readers do
 		local source = sources[reader[2]]
 		for key in reader[1] do
 			H.truthy(string.find(source, reader[3] .. "." .. key, 1, true), `{reader[2]} reads {reader[3]}.{key}`)
 		end
+	end
+end)
+
+H.test("every sound key played exists, and every configured sound is played", function()
+	local played = {}
+	for path, source in codeFiles do
+		for key in string.gmatch(source, "AudioController%.%a+%(\"([%w_]+)\"") do
+			played[key] = true
+			H.truthy(CONFIGS.AudioConfig.Sounds[key], `{path} plays unknown sound "{key}"`)
+		end
+		for key in string.gmatch(source, "%f[%w_]Play%(\"([%w_]+)\"") do
+			played[key] = true
+			H.truthy(CONFIGS.AudioConfig.Sounds[key], `{path} plays unknown sound "{key}"`)
+		end
+	end
+	for key in CONFIGS.AudioConfig.Sounds do
+		H.truthy(played[key], `AudioConfig.Sounds.{key} is never played`)
+	end
+end)
+
+H.test("every animation marker has a listener, and every listener a marker", function()
+	local configured = {}
+	local function collect(entry)
+		for _, marker in entry.Markers do
+			configured[marker] = true
+		end
+	end
+	local animation = CONFIGS.AnimationConfig
+	for _, entry in { animation.Attack, animation.DoubleJumpSpin, animation.DashRoll, animation.Locomotion.Walk, animation.Locomotion.Run, animation.Locomotion.Idle } do
+		collect(entry)
+	end
+	local listened = {}
+	for _, source in codeFiles do
+		for marker in string.gmatch(source, "OnMarker%(\"([%w_]+)\"") do
+			listened[marker] = true
+			H.truthy(configured[marker], `listener for unconfigured marker {marker}`)
+		end
+	end
+	for marker in configured do
+		H.truthy(listened[marker], `marker {marker} has no listener`)
 	end
 end)
 

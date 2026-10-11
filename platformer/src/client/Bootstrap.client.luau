@@ -2,12 +2,15 @@
 -- Client entry point. Waits only for what it needs (the server-created
 -- remotes), verifies the remote contract, then starts each controller once:
 --   1. CharacterLifecycle           character spawn/death/despawn fan-out
---   2. CollectibleVisualController  collectible visuals + pickup requests
---   3. MovementController           move set (incl. double-jump spin/float) and local effects
---   4. AttackController             right-click attack animation (no remotes;
---                                   reads MovementController.GetState)
---   5. HeartUIController            three-heart health display
---   6. FeedbackController           damage flash + camera shake
+--   2. AnimationController          all animation playback + walk/run layer
+--   3. AudioController              all gameplay audio + footsteps
+--   4. CollectibleVisualController  collectible visuals + pickup requests
+--   5. MovementController           move set (incl. double-jump spin/float) and local effects
+--   6. AttackController             right-click attack animation (no remotes)
+--   7. HeartUIController            three-heart health display
+--   8. FeedbackController           damage flash + camera shake
+-- Animation and Audio read the movement state through an injected
+-- MovementController.GetState, so neither needs to require it (no cycles).
 -- Controllers register with CharacterLifecycle, so they re-bind to every new
 -- character automatically. A controller that fails to start is logged and
 -- skipped; the others keep working (e.g. a UI error never disables movement).
@@ -25,6 +28,8 @@ local Types = require(Shared:WaitForChild("Types"))
 local Client = script.Parent
 local CharacterLifecycle = require(Client.Utilities.CharacterLifecycle)
 local Controllers = Client.Controllers
+local AnimationController = require(Controllers.AnimationController)
+local AudioController = require(Controllers.AudioController)
 local CollectibleVisualController = require(Controllers.CollectibleVisualController)
 local MovementController = require(Controllers.MovementController)
 local AttackController = require(Controllers.AttackController)
@@ -74,6 +79,14 @@ end
 local remotes = waitForRemotes()
 
 start("CharacterLifecycle", CharacterLifecycle.Start)
+start("AnimationController", function()
+	AnimationController.Init({ GetMovementState = MovementController.GetState })
+	AnimationController.Start()
+end)
+start("AudioController", function()
+	AudioController.Init({ GetMovementState = MovementController.GetState })
+	AudioController.Start()
+end)
 if remotes then
 	start("CollectibleVisualController", function()
 		CollectibleVisualController.Init(remotes)

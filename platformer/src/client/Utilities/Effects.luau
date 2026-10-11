@@ -179,6 +179,11 @@ function Effects.DoubleJumpBurst(rig: CharacterRig, trailDuration: number?)
 	rig.JumpEmitter:Emit(MovementConfig.DoubleJump.Effects.BurstCount)
 end
 
+-- Small dust puff at the feet (double-jump landing).
+function Effects.LandingPuff(rig: CharacterRig)
+	rig.DustEmitter:Emit(MovementConfig.DoubleJump.Effects.LandingDustCount)
+end
+
 function Effects.DashBurst(rig: CharacterRig, duration: number)
 	Effects.PulseTrail(rig, rig.DashTrail, duration)
 	rig.DustEmitter:Emit(MovementConfig.Dash.Effects.DustCount)

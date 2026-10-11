@@ -20,6 +20,12 @@
 --   * One attack at a time: a cooldown from each start, a playing track is
 --     never restarted, and a running procedural punch blocks a new one.
 --
+-- Sound: AudioConfig "AttackSwing" plays once per attack, at the animation's
+-- "AttackImpact" event if the asset has one, otherwise SwingSoundDelay after
+-- the start (custom animation) or as the procedural strike begins. There is
+-- no hit sound: nothing can be hit yet, and a hit sound must only ever follow
+-- a server-confirmed hit (see below).
+--
 -- Adding real combat later: listen for a "Hit" marker on the track
 -- (GetMarkerReachedSignal) or the fallback's strike phase and FireServer an
 -- AttackRequest with NO damage or target. The server must check its own
@@ -41,8 +47,9 @@ local AttackMath = require(Shared:WaitForChild("Math"):WaitForChild("AttackMath"
 local Logger = require(Shared:WaitForChild("Utilities"):WaitForChild("Logger"))
 
 local Client = script.Parent.Parent
-local CharacterAnimations = require(Client.Utilities.CharacterAnimations)
 local CharacterLifecycle = require(Client.Utilities.CharacterLifecycle)
+local AnimationController = require(script.Parent.AnimationController)
+local AudioController = require(script.Parent.AudioController)
 local MovementController = require(script.Parent.MovementController)
 
 type Context = CharacterLifecycle.Context
@@ -72,6 +79,8 @@ local pressStartedAt: number? = nil
 local pressDrag = 0
 local poseRun: PoseRun? = nil
 local activeTrack: AnimationTrack? = nil
+local swingToken = 0
+local swingPending = false
 local warnedNoJoints: { [Context]: boolean } = setmetatable({}, { __mode = "k" }) :: any
 local started = false
 
@@ -163,7 +172,29 @@ end
 -- Attack
 ------------------------------------------------------------------------------
 
+-- Plays the swing sound once for the current attack.
+local function playSwing()
+	if swingPending then
+		swingPending = false
+		AudioController.Play("AttackSwing")
+	end
+end
+
+-- Arms the swing sound: an "AttackImpact" event plays it earlier; otherwise
+-- it plays after `delay`. A newer attack or stopAll supersedes it.
+local function armSwing(delay: number)
+	swingToken += 1
+	local token = swingToken
+	swingPending = true
+	task.delay(delay, function()
+		if swingToken == token then
+			playSwing()
+		end
+	end)
+end
+
 local function stopAll()
+	swingPending = false
 	stopPose()
 	local track = activeTrack
 	activeTrack = nil
@@ -190,11 +221,15 @@ local function tryAttack()
 	end
 	readyAt = now + Attack.Cooldown
 
-	local track = CharacterAnimations.Play(context, AnimationConfig.Attack)
+	local track = AnimationController.Play(context, AnimationConfig.Attack)
 	if track then
 		activeTrack = track
+		armSwing(Attack.SwingSoundDelay)
 	else
 		startPose(context)
+		if poseRun then
+			armSwing(Attack.Fallback.WindupTime)
+		end
 	end
 end
 
@@ -264,7 +299,12 @@ function AttackController.Start()
 	assert(not started, "AttackController already started")
 	started = true
 
-	CharacterAnimations.Preload({ AnimationConfig.Attack })
+	AnimationController.Preload({ AnimationConfig.Attack.AnimationId })
+	AnimationController.OnMarker("AttackImpact", function(context)
+		if context == CharacterLifecycle.GetContext() then
+			playSwing()
+		end
+	end)
 	CharacterLifecycle.Register("AttackController", {
 		OnSpawn = function()
 			stopAll()
