@@ -55,3 +55,20 @@ These run outside Roblox. They build every room layout and every border style an
 - zero-size parts and parts that spill outside their chunk
 - z-fighting (two overlapping faces in the same plane)
 - that every chunk within 20 of the spawn can be reached
+
+---
+
+# Inkwood Platformer (second project in this repo)
+
+A separate Rojo project, `platformer.project.json`, that holds a server-secure 3D platformer and
+collectathon framework. It covers double jump, dash, ground pound and wall jump; session-locked
+persistent Shards and Power Orbs; collectibles registered through CollectionService; breakable
+terrain; and a three-heart health UI. It doesn't touch the Poolrooms files above.
+
+```sh
+rojo build platformer.project.json -o Platformer.rbxl
+platformer/tests/run.sh   # Lune unit + contract tests
+```
+
+See **[docs/PLATFORMER_GUIDE.md](docs/PLATFORMER_GUIDE.md)** for the architecture, the file
+map, Studio setup (tags and attributes), the security model and the acceptance checklist.

@@ -1,0 +1,34 @@
+{
+  "name": "InkwoodPlatformer",
+  "tree": {
+    "$className": "DataModel",
+    "ReplicatedStorage": {
+      "Shared": {
+        "$path": "platformer/src/shared"
+      }
+    },
+    "ServerScriptService": {
+      "Server": {
+        "$path": "platformer/src/server"
+      }
+    },
+    "StarterPlayer": {
+      "$properties": {
+        "EnableMouseLockOption": false
+      },
+      "StarterPlayerScripts": {
+        "Client": {
+          "$path": "platformer/src/client"
+        }
+      }
+    },
+    "Workspace": {
+      "Collectibles": {
+        "$className": "Folder"
+      },
+      "Destructibles": {
+        "$className": "Folder"
+      }
+    }
+  }
+}
