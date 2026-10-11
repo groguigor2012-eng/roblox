@@ -2,7 +2,7 @@
 
 A server-secure framework for a Roblox 3D platformer and collectathon. It has three parts:
 
-1. **Movement**: double jump, directional dash (`E`), ground pound (`LeftShift`), wall jump and coyote time, each with local effects.
+1. **Movement**: double jump with a spin and short float, directional dash (`E`), ground pound (`LeftShift`), wall jump and coyote time, each with local effects. A right-click attack animation sits alongside them.
 2. **Progression**: persistent Shards and Power Orbs, session-locked DataStore saves, leaderstats, and one collectible system that serves every item tagged in CollectionService.
 3. **Health UI**: three hearts drawn from `Humanoid.Health`, plus a red damage flash and a short camera shake.
 
@@ -66,7 +66,10 @@ rojo build platformer.project.json -o Platformer.rbxl
 | `…/Config/HealthUIConfig` | Heart layout and style, flash and shake | — |
 | `…/Config/DataConfig` | DataStore name, schema version, retry, session lock, autosave, kick messages | — |
 | `…/Shared/Types` | Shared types and every remote payload | — |
-| `…/Shared/Math/MovementMath` | Pure maths for curves, directions, wall launch and descent (unit-tested) | MovementConfig |
+| `…/Config/AnimationConfig` | Every custom animation id (attack, spin pose, dash roll), with priority, speed and fade | — |
+| `…/Config/CombatConfig` | Right-click attack: input, trigger mode, cooldown, blocked states, fallback punch | — |
+| `…/Shared/Math/MovementMath` | Pure maths for curves, directions, wall launch, descent, spin profile and float lift (unit-tested) | MovementConfig |
+| `…/Shared/Math/AttackMath` | Pure fallback-punch pose curve and click-versus-drag test (unit-tested) | — |
 | `…/Shared/Math/HealthMath` | Pure heart formula (unit-tested) | — |
 | `…/Shared/Utilities/ResourceCleanup` | Releases connections, instances, threads and callbacks together | — |
 | `…/Shared/Utilities/Logger` | Structured `[Platformer/Scope] Event key=value` logs | GameConfig |
@@ -89,7 +92,9 @@ rojo build platformer.project.json -o Platformer.rbxl
 | `StarterPlayer/StarterPlayerScripts/Client/Bootstrap` (LocalScript) | Waits for and verifies remotes, then starts controllers | all controllers |
 | `…/Client/Utilities/CharacterLifecycle` | Per-spawn context and cleanup group; spawn/died/despawn fan-out | ResourceCleanup |
 | `…/Client/Utilities/Effects` | Trails, bursts, shockwave, debris, pickup ghost, floating text | Configs |
-| `…/Client/Controllers/MovementController` | Input, ability state machine, local effects, movement remotes | Lifecycle, Effects, Feedback |
+| `…/Client/Utilities/CharacterAnimations` | Loads and plays AnimationConfig entries on the character's Animator; preloads ids and falls back if one fails | Lifecycle |
+| `…/Client/Controllers/MovementController` | Input, ability state machine (incl. spin-float), local effects, movement remotes | Lifecycle, Animations, Effects, Feedback |
+| `…/Client/Controllers/AttackController` | Right-click/R1/touch attack: Animator track or procedural punch | Lifecycle, Animations, MovementController |
 | `…/Client/Controllers/CollectibleVisualController` | Shared spin/bob loop, per-player hiding, pickup requests | Lifecycle, Effects |
 | `…/Client/Controllers/HeartUIController` | Builds `PlayerGui.HeartUI`; hearts follow the Humanoid | Lifecycle, HealthMath |
 | `…/Client/Controllers/FeedbackController` | Damage flash overlay and trauma-based camera shake | Lifecycle |
@@ -187,10 +192,28 @@ streams in as one piece. The client copes with partial models, but atomic is cle
 * After changing the PlayerData layout, bump `DataConfig.SchemaVersion` and add
   `DataSchema.Migrations[old]`.
 
-### 4.7 Optional roll animation
-Upload an R15 or R6 roll animation you own and set
-`MovementConfig.Dash.RollAnimationId = "rbxassetid://<id>"`. When it's empty, the dash still
-works and shows its trail and dust burst.
+### 4.7 Custom animations (optional; you supply them)
+**No animation asset ships with this project.** Every id in `Shared/Config/AnimationConfig` is
+empty, and each has a working fallback:
+
+| Entry | Plays | If empty or unloadable |
+|---|---|---|
+| `AnimationConfig.Attack` | right-click attack (wind-up, hit, recovery) | procedural right-arm punch, **visible only to you** (see §7) |
+| `AnimationConfig.DoubleJumpSpin` | pose held during the spin (looped) | the spin still happens; the normal fall animation plays |
+| `AnimationConfig.DashRoll` | dash roll (moved here from `MovementConfig.Dash.RollAnimationId`) | dash with trail and dust only |
+
+To add one:
+1. Make it in the **Animation Editor** (Avatar tab), using a rig of the same type your game spawns
+   (R15 by default). Use an animation you created or have permission to use.
+2. Key **only the upper body** for the attack, so the legs keep running underneath it. Add a
+   wind-up, the hit and a recovery. Set the attack and roll to not loop, and the spin pose to loop.
+3. **Publish to Roblox** under the **same owner as the experience** (your account, or the group
+   that owns the game). Roblox won't load animations owned by someone else in your game.
+4. Copy the asset id into the entry: `AnimationId = "rbxassetid://1234567890"`.
+5. If the id fails to load, the output shows `AnimationUnavailable` once and the fallback is
+   used for the rest of the session.
+
+An R15 animation does not play on R6 characters, and an R6 one does not play on R15.
 
 ### 4.8 Demo course
 `GameConfig.DemoCourse.Mode` is `"Always"`, so a blank place is playable straight away. Switch it
@@ -263,10 +286,11 @@ item, which covers any race.
 
 **Cleanup:**
 * Everything tied to a character goes into its `CharacterLifecycle` cleanup group, which is
-  destroyed on despawn: connections, the single `LinearVelocity` mover, attachments, trails,
-  emitters and the roll track.
-* Abilities end through one `endAbility` path, which disconnects the per-frame step, disables
-  the mover and stops the animation.
+  destroyed on despawn: connections, the `LinearVelocity` mover, the `AngularVelocity` spinner,
+  the `VectorForce` float, attachments, trails, emitters and every loaded animation track.
+* Abilities end through one `endAbility` path. It disconnects the per-frame step, disables all
+  three constraints, restores `Humanoid.AutoRotate` if the spin turned it off, and stops the
+  ability's animation. Landing, death, despawn, and starting any other ability all go through it.
 * Delayed callbacks check an ability token, so a stale timer can't end a newer ability.
 * Collectible watchers are destroyed when the tag is removed or the item streams out.
 * Effects are removed by a tween completion, with `Debris` as a backstop. Burst emitters are
@@ -299,8 +323,8 @@ item, which covers any race.
 |---|---|---|
 | Strict type check against the Roblox API, both Luau solvers | `luau-lsp analyze --platform=roblox --sourcemap=sourcemap.json --definitions=@roblox=globalTypes.d.luau $(find platformer/src -name '*.luau')` (add `--no-flags-enabled` for the old solver) | 0 errors, 0 lint warnings |
 | Rojo build | `rojo build platformer.project.json -o Platformer.rbxl` | builds |
-| Unit tests (Lune) | `platformer/tests/run.sh` | 56 passed |
-| Contract checks (Lune) | same script | 9 passed |
+| Unit tests (Lune) | `platformer/tests/run.sh` | 62 passed |
+| Contract checks (Lune) | same script | 10 passed |
 
 The unit tests cover:
 * curve endpoints, monotonicity and clamping; dash speed endpoints and midpoints; descent cap
@@ -339,6 +363,24 @@ fired and handled in the right direction.
 - [ ] Wall jump in the shaft pushes away from the wall and upward. The same wall can't be reused within 0.6 s. A floor below never counts as a wall. A wall jump restores the air jump.
 - [ ] With 2 clients, the other player sees your shockwave and debris.
 
+**Double-jump spin and float**
+- [ ] The air jump goes slightly higher than before, spins about one full turn (smooth start and stop) and hangs near the top, then falls normally. Holding nothing never keeps you up.
+- [ ] Steering with WASD works throughout the spin and float.
+- [ ] The trail draws the whole spin, and the burst plays.
+- [ ] Mid-spin, `E` dashes, `LeftShift` pounds, and jumping next to a wall wall-jumps. Each stops the spin immediately, and the character faces the movement direction again afterwards.
+- [ ] Landing mid-spin stops it at once. After landing, walking turns the character normally (AutoRotate restored).
+- [ ] Die mid-spin (damage pad), then respawn: no spinning, and in the Explorer `PlatformerSpin` and `PlatformerFloat` under `HumanoidRootPart` are disabled.
+- [ ] With 2 clients, the other player sees you spin. Only your own trail is local.
+
+**Right-click attack**
+- [ ] A quick right-click plays the punch: wind-up, hit, recovery. Holding right-click and dragging turns the camera **without** attacking.
+- [ ] Spam-clicking attacks at most once per 0.45 s, and the punch never restarts mid-swing.
+- [ ] Attacking while running, jumping and spinning works, and the legs keep their animation. Nothing happens during a ground pound or its landing.
+- [ ] Right-clicking on a button or in the chat box doesn't attack.
+- [ ] Gamepad R1 and the on-screen "Hit" touch button attack.
+- [ ] Die mid-punch, then respawn: the arm is in its normal pose. Test with an R6 avatar too (Game Settings → Avatar → R6): the arm punches, with no elbow or waist motion.
+- [ ] With a custom `AnimationConfig.Attack` id: it plays instead of the fallback, and the other client sees it. With a bogus id: one `AnimationUnavailable` warning, then the fallback.
+
 **Progression**
 - [ ] A new player has `Shards 0 / PowerOrbs 0`. Shards and orbs update the correct leaderstat.
 - [ ] Re-join (with API access on): totals restored, collected items stay hidden, and **the other client still sees them**.
@@ -354,3 +396,72 @@ fired and handled in the right direction.
 
 **Performance**
 - [ ] The MicroProfiler shows one `PreRender` collectible loop. The Developer Console's network stats show no replication traffic from spinning items.
+
+## 7. Double-jump spin/float and right-click attack
+
+### How they fit in
+* **Spin-float** is a new ability (`"SpinFloat"`, state `"SpinFloating"`) in
+  `MovementController`'s existing state machine. Every double jump starts it; wall jumps don't.
+  * It can be interrupted by dash, ground pound and wall jump, through the same `CAN_START`
+    table as the other abilities.
+  * Like wall jumps, it is "air-only", so landing ends it.
+  * Each character gets two extra constraints at spawn, both off by default: an
+    `AngularVelocity` for the spin and a `VectorForce` for the float.
+  * Steering stays with the Humanoid. The spin only constrains rotation and the float only adds
+    an upward force, so WASD works as in a normal jump.
+  * The character is never anchored, and the spin never teleports it.
+  * `Humanoid.AutoRotate` is switched off only during the spin, so Roblox's turn-to-face logic
+    doesn't fight it. It is restored to its saved value whenever the spin stops.
+* **Attack** is a new `AttackController`. Attacking isn't movement, so it has its own
+  controller, but it registers with the same `CharacterLifecycle`. It reads
+  `MovementController.GetState()` to refuse attacks while dead, pounding or landing.
+  * It adds one binding (`PlatformerAttack`, gamepad R1 and the touch button) at the movement
+    controls' priority.
+  * The right mouse button is observed, not bound, the same way jump keys are. That keeps
+    right-drag camera turning untouched. A `Click` trigger mode makes sure a camera drag never
+    attacks.
+* Both play animations through the new `CharacterAnimations` loader on the character's own
+  Animator. The dash roll uses it too, and was moved into `AnimationConfig`.
+
+### Tuning cheat-sheet
+
+| I want… | Change | Default |
+|---|---|---|
+| a slower spin | lower `MovementConfig.SpinFloat.SpinSpeed` (peak °/s) or raise `SpinDuration` | 760, 0.75 s |
+| more or fewer turns | total turn ≈ `SpinSpeed × SpinDuration × 0.64` degrees | ≈ 1 turn |
+| clockwise spin | `SpinDirection = -1` | 1 |
+| a longer float | raise `FloatDuration` | 0.9 s |
+| a floatier hang | lower `FallGravityScale` (share of gravity felt; must stay above 0) | 0.35 |
+| a softer end to the float | raise `FloatFadeTime` | 0.25 s |
+| a bigger boost | raise `UpwardBoost` (added to `DoubleJump.Velocity` 52) | 8 |
+| the old plain double jump | `SpinFloat.Enabled = false` | true |
+| a faster attack | lower `CombatConfig.Attack.Fallback` phase times (`WindupTime`, `StrikeTime`, `HoldTime`, `RecoveryTime`), or raise `AnimationConfig.Attack.Speed` for a custom animation | 0.39 s in total |
+| more attacks per second | lower `CombatConfig.Attack.Cooldown` (keep it ≥ the punch length) | 0.45 s |
+| attack on press instead of release | `TriggerMode = "Press"` (camera drags will then attack too) | "Click" |
+| a bigger punch | `StrikeShoulderPitch`, `WindupShoulderPitch`, `StrikeWaistTwist` | 95°, −35°, 20° |
+
+### Multiplayer behaviour
+* **Spin and float:** your client owns your character's physics, so its rotation and position
+  reach other players through normal character replication. No per-frame data is sent, and the
+  server only sees the existing `DoubleJump` report. The trail is local.
+* **Attack with a custom animation:** tracks played on your own Animator replicate
+  automatically.
+* **Attack with the fallback punch:** this is a limitation. Motor6D changes made on a client
+  don't replicate, so only you see the procedural punch. Supply an animation (§4.7) for everyone
+  to see it.
+
+### Rig support
+* **R15:** the fallback moves the shoulder, elbow and waist.
+* **R6:** the fallback moves the shoulder only, because R6 has no elbow or waist joint.
+* **Spin and float:** work the same on both rigs.
+* **Custom animations:** must match the rig they were authored on.
+
+### Adding real combat later
+Today there is no hitbox, damage or remote. To add combat securely:
+1. Put a `Hit` marker in the attack animation, and listen for it with
+   `track:GetMarkerReachedSignal("Hit")` (for the fallback, use its strike phase).
+2. On that signal, `FireServer` a new `AttackRequest` remote that carries **no damage, target or
+   position**.
+3. On the server, check a server-side cooldown and that the attacker is alive. Then find targets
+   yourself with a spatial query around the server's view of the character, and apply damage
+   there. This mirrors how ground-pound impacts are validated.

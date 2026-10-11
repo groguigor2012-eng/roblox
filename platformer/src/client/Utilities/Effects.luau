@@ -172,8 +172,10 @@ function Effects.PulseTrail(rig: CharacterRig, trail: Trail, duration: number)
 	end)
 end
 
-function Effects.DoubleJumpBurst(rig: CharacterRig)
-	Effects.PulseTrail(rig, rig.JumpTrail, MovementConfig.DoubleJump.Effects.TrailDuration)
+-- trailDuration defaults to DoubleJump.Effects.TrailDuration; the spin-float
+-- passes its spin length so the trail draws the whole spin.
+function Effects.DoubleJumpBurst(rig: CharacterRig, trailDuration: number?)
+	Effects.PulseTrail(rig, rig.JumpTrail, trailDuration or MovementConfig.DoubleJump.Effects.TrailDuration)
 	rig.JumpEmitter:Emit(MovementConfig.DoubleJump.Effects.BurstCount)
 end
 

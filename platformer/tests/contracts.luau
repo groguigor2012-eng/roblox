@@ -16,6 +16,8 @@ local CONFIGS = {
 	CollectibleConfig = H.load("shared/Config/CollectibleConfig"),
 	HealthUIConfig = H.load("shared/Config/HealthUIConfig"),
 	DataConfig = H.load("shared/Config/DataConfig"),
+	AnimationConfig = H.load("shared/Config/AnimationConfig"),
+	CombatConfig = H.load("shared/Config/CombatConfig"),
 }
 
 -- Tables indexed by runtime keys (iterated or looked up by a variable): treat as leaves.
@@ -25,6 +27,12 @@ local MAP_TABLES = {
 	["CollectibleConfig.DefaultRewards"] = true,
 	["CollectibleConfig.Visual.Colors"] = true,
 	["CollectibleConfig.Visual.DisplayNames"] = true,
+	["CombatConfig.Attack.BlockedStates"] = true,
+	-- Passed whole to a consumer; its fields are checked below.
+	["CombatConfig.Attack.Fallback"] = true,
+	["AnimationConfig.Attack"] = true,
+	["AnimationConfig.DoubleJumpSpin"] = true,
+	["AnimationConfig.DashRoll"] = true,
 }
 
 local sources = H.sources()
@@ -77,7 +85,11 @@ H.test("every XConfig.path and alias.path in code exists", function()
 			end
 		end
 		for alias, target in aliases do
-			for rest in string.gmatch(source, "%f[%w_]" .. escape(alias) .. "%.([%w_]+)") do
+			for position, rest in string.gmatch(source, "()%f[%w_]" .. escape(alias) .. "%.([%w_]+)") do
+				-- Skip "Other.Alias.Key": that is a member of something else, not the alias.
+				if position > 1 and string.sub(source, position - 1, position - 1) == "." then
+					continue
+				end
 				local segments = string.split(target[2], ".")
 				table.insert(segments, rest)
 				if not lookup(CONFIGS[target[1]], segments) then
@@ -126,6 +138,19 @@ H.test("every config leaf is referenced outside the config files", function()
 	table.sort(unused)
 	if #unused > 0 then
 		error("unused config keys:\n    " .. table.concat(unused, "\n    "))
+	end
+end)
+
+H.test("records passed whole are fully consumed by their reader", function()
+	local readers = {
+		{ CONFIGS.CombatConfig.Attack.Fallback, "platformer/src/shared/Math/AttackMath.luau", "pose" },
+		{ CONFIGS.AnimationConfig.Attack, "platformer/src/client/Utilities/CharacterAnimations.luau", "entry" },
+	}
+	for _, reader in readers do
+		local source = sources[reader[2]]
+		for key in reader[1] do
+			H.truthy(string.find(source, reader[3] .. "." .. key, 1, true), `{reader[2]} reads {reader[3]}.{key}`)
+		end
 	end
 end)
 

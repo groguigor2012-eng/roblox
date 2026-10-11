@@ -129,6 +129,87 @@ test("jump velocity from height", function()
 end)
 
 ------------------------------------------------------------------------------
+H.suite("MovementMath: double-jump spin and float")
+
+test("spin profile eases in and out", function()
+	near(MovementMath.SpinProfile(0), 0, 1e-9, "start")
+	near(MovementMath.SpinProfile(0.5), 1, 1e-9, "peak")
+	near(MovementMath.SpinProfile(1), 0, 1e-9, "end")
+	eq(MovementMath.SpinProfile(-1), MovementMath.SpinProfile(0), "clamped")
+	-- Total turn = SpinSpeed * duration * 2/pi; integrate numerically.
+	local spin = MovementConfig.SpinFloat
+	local steps, total = 2000, 0
+	for index = 0, steps - 1 do
+		local s = (index + 0.5) / steps
+		total += spin.SpinSpeed * MovementMath.SpinProfile(s) * (spin.SpinDuration / steps)
+	end
+	near(total, spin.SpinSpeed * spin.SpinDuration * 2 / math.pi, 0.01, "total degrees")
+	truthy(total >= 300 and total <= 420, "default spin is about one full turn")
+end)
+
+test("float fade holds, then drops linearly to zero, and closes", function()
+	eq(MovementMath.FloatFade(0, 0.9, 0.25), 1)
+	eq(MovementMath.FloatFade(0.6, 0.9, 0.25), 1)
+	near(MovementMath.FloatFade(0.775, 0.9, 0.25), 0.5, 1e-9)
+	eq(MovementMath.FloatFade(0.9, 0.9, 0.25), 0, "window closed")
+	eq(MovementMath.FloatFade(5, 0.9, 0.25), 0, "never floats forever")
+	eq(MovementMath.FloatFade(-0.1, 0.9, 0.25), 0)
+	eq(MovementMath.FloatFade(0.5, 0.9, 0), 1, "no fade time")
+end)
+
+test("float lift leaves the configured fraction of gravity", function()
+	-- mass 10, g 196.2, scale 0.35 -> lift cancels 65% of weight.
+	near(MovementMath.FloatLiftForce(10, 196.2, 0.35, 1), 10 * 196.2 * 0.65, 1e-9)
+	near(MovementMath.FloatLiftForce(10, 196.2, 0.35, 0.5), 10 * 196.2 * 0.325, 1e-9)
+	eq(MovementMath.FloatLiftForce(10, 196.2, 1, 1), 0, "scale 1 = no float")
+	near(MovementMath.FloatLiftForce(10, 196.2, -3, 1), 10 * 196.2, 1e-9, "scale clamped: never more than weight")
+	near(MovementMath.FloatLiftForce(10, 196.2, 0.35, 7), 10 * 196.2 * 0.65, 1e-9, "fade clamped")
+end)
+
+------------------------------------------------------------------------------
+H.suite("AttackMath")
+
+local AttackMath = H.load("shared/Math/AttackMath")
+local CombatConfigForTests = H.load("shared/Config/CombatConfig")
+
+test("fallback punch is continuous, hits the strike pose and ends neutral", function()
+	local pose = CombatConfigForTests.Attack.Fallback
+	local total = AttackMath.TotalTime(pose)
+	local previous = { AttackMath.FallbackPose(pose, 0) }
+	eq(previous[1], 0, "starts neutral")
+	local reachedStrike, reachedWindup = false, false
+	for index = 1, 400 do
+		local elapsed = total * index / 400
+		local pitch, bend, twist, finished = AttackMath.FallbackPose(pose, elapsed)
+		if not finished then
+			truthy(math.abs(pitch - previous[1]) < 25, `no shoulder jump at {elapsed}`)
+			truthy(math.abs(bend - previous[2]) < 25, `no elbow jump at {elapsed}`)
+			truthy(math.abs(twist - previous[3]) < 10, `no waist jump at {elapsed}`)
+		end
+		if math.abs(pitch - pose.StrikeShoulderPitch) < 1e-6 then
+			reachedStrike = true
+		end
+		if math.abs(pitch - pose.WindupShoulderPitch) < 1 then
+			reachedWindup = true
+		end
+		previous = { pitch, bend, twist }
+	end
+	truthy(reachedWindup, "wind-up reached")
+	truthy(reachedStrike, "strike held")
+	local pitch, bend, twist, finished = AttackMath.FallbackPose(pose, total + 0.01)
+	truthy(finished, "finishes")
+	eq(pitch, 0)
+	eq(bend, 0)
+	eq(twist, 0)
+end)
+
+test("click versus camera drag", function()
+	truthy(AttackMath.IsClick(0.1, 2, 0.3, 8), "short still click")
+	truthy(not AttackMath.IsClick(0.5, 0, 0.3, 8), "held too long")
+	truthy(not AttackMath.IsClick(0.1, 40, 0.3, 8), "dragged the camera")
+end)
+
+------------------------------------------------------------------------------
 H.suite("HealthMath")
 
 local function hearts(health, maxHealth)
@@ -620,6 +701,19 @@ test("movement tuning is coherent", function()
 	truthy(pound.MinActivationHeight > MovementConfig.Validation.ActivationHeightTolerance)
 	truthy(wall.ProbeDirections >= 4 and #wall.ProbeHeightOffsets >= 1)
 	truthy(wall.MaxWallNormalY < 0.7, "floors (normal Y ~ 1) are never walls")
+end)
+
+test("spin-float and attack tuning are coherent", function()
+	local spin = MovementConfig.SpinFloat
+	truthy(spin.FallGravityScale > 0 and spin.FallGravityScale <= 1, "gravity never fully cancelled")
+	truthy(spin.FloatFadeTime <= spin.FloatDuration)
+	truthy(spin.SpinDuration > 0 and spin.FloatDuration > 0 and spin.UpwardBoost >= 0)
+	truthy(spin.SpinDirection == 1 or spin.SpinDirection == -1)
+	local attack = H.load("shared/Config/CombatConfig").Attack
+	local AttackMathModule = H.load("shared/Math/AttackMath")
+	truthy(attack.Cooldown >= AttackMathModule.TotalTime(attack.Fallback), "fallback punch cannot overlap itself")
+	truthy(attack.TriggerMode == "Click" or attack.TriggerMode == "Press")
+	truthy(attack.BlockedStates.Dead, "never attacks while dead")
 end)
 
 test("hearts and remotes", function()

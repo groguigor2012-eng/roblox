@@ -60,6 +60,42 @@ MovementConfig.DoubleJump = table.freeze({
 	}),
 })
 
+-- Spin + float added to every double jump (not to wall jumps).
+--   Upward boost: the air jump's vertical velocity becomes
+--     DoubleJump.Velocity + UpwardBoost.
+--   Spin: yaw rate over normalised spin time s in [0, 1]
+--     omega(s) = SpinSpeed * sin(pi * s)          (degrees/second)
+--   eases in and out, so the turn starts and ends gently; total turn is
+--     SpinSpeed * SpinDuration * 2/pi degrees (760 * 0.75 * 0.637 ~ 363 deg).
+--   Float: while the window is open and the character is moving down (or
+--   slower than FloatBelowVerticalSpeed upward), an upward force cancels
+--   part of gravity, so the effective downward acceleration is
+--     g * (1 - (1 - FallGravityScale) * fade(t))
+--   where fade is 1 until the last FloatFadeTime seconds and then drops
+--   linearly to 0. Gravity is never cancelled completely and the window
+--   always closes, so this can't be used to fly.
+MovementConfig.SpinFloat = table.freeze({
+	Enabled = true,
+	UpwardBoost = 8,
+	-- Peak yaw speed in degrees/second; lower = slower spin.
+	SpinSpeed = 760,
+	SpinDuration = 0.75,
+	-- +1 counter-clockwise seen from above, -1 clockwise.
+	SpinDirection = 1,
+	FloatDuration = 0.9,
+	-- Fraction of gravity felt while floating (0.35 = 35%). 1 disables the float.
+	FallGravityScale = 0.35,
+	FloatFadeTime = 0.25,
+	-- The float starts helping once upward speed drops below this (studs/s),
+	-- i.e. around the top of the jump, so it lengthens the hang instead of
+	-- making the jump taller.
+	FloatBelowVerticalSpeed = 10,
+	-- Torque cap for the spin constraint (high enough for any rig).
+	MaxTorque = 1e6,
+	-- The double-jump trail keeps emitting for the whole spin.
+	TrailFollowsSpin = true,
+})
+
 -- Dash speed over normalised time t in [0, 1]:
 --   speed(t) = InitialSpeed + (TerminalSpeed - InitialSpeed) * curve(t)
 -- with curve one of (all map 0 -> 0 and 1 -> 1, monotonic):
@@ -83,10 +119,7 @@ MovementConfig.Dash = table.freeze({
 	ResetFallSpeedInAir = true,
 	-- Pressing jump during a dash ends it (on the ground: normal jump; in the air: air jump).
 	CancelOnJump = true,
-	-- Optional roll animation ("rbxassetid://..."). Empty = no animation; the
-	-- dash still works and shows its trail and dust burst.
-	RollAnimationId = "",
-	RollAnimationSpeed = 1.6,
+	-- The optional roll animation is AnimationConfig.DashRoll.
 	Effects = table.freeze({
 		TrailColor = Color3.fromRGB(150, 205, 255),
 		TrailTransparency = NumberSequence.new(0.3, 1),

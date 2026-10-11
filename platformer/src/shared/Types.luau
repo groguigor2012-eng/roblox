@@ -13,7 +13,8 @@ export type PlayerData = {
 }
 
 -- Client movement state. Grounded/Rising/Falling are derived from physics;
--- the rest are set while an ability runs. "Landing" is the ground-pound recovery.
+-- the rest are set while an ability runs. "Landing" is the ground-pound
+-- recovery; "SpinFloating" is the spin + float after a double jump.
 export type MovementState =
 	"Grounded"
 	| "Rising"
@@ -22,6 +23,7 @@ export type MovementState =
 	| "GroundPounding"
 	| "Landing"
 	| "WallJumping"
+	| "SpinFloating"
 	| "Dead"
 
 -- Actions the client reports through MovementAction.

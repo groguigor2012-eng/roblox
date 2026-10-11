@@ -1,22 +1,27 @@
 --!strict
--- Local-player movement: double jump, dash (E), ground pound (LeftShift),
--- wall jump, coyote time, and their local effects.
+-- Local-player movement: double jump (with spin + float), dash (E), ground
+-- pound (LeftShift), wall jump, coyote time, and their local effects.
 --
 -- Physics model: the client owns its character, so abilities set the root's
--- AssemblyLinearVelocity directly (instant impulses) or drive ONE
--- LinearVelocity per character (sustained motion). Ability is the single
--- source of truth for what is running; starting an ability always ends the
--- previous one first, so constraints can never stack. Humanoid properties
--- (WalkSpeed, JumpPower, ...) are never modified.
+-- AssemblyLinearVelocity directly (instant impulses) or drive constraints
+-- created once per character: a LinearVelocity (dash, wall-jump lock, pound,
+-- recovery), an AngularVelocity (spin) and a VectorForce (float). All three
+-- are disabled whenever no ability uses them. Ability is the single source
+-- of truth for what is running; starting an ability always ends the previous
+-- one first, and endAbility switches every constraint off, so nothing can
+-- stack or linger. The only Humanoid property ever changed is AutoRotate,
+-- turned off while spinning (so Roblox's facing logic doesn't fight the
+-- spin) and restored to its saved value whenever the spin ends for any reason.
 --
 -- State model (Types.MovementState):
 --   Dead                 character not alive
---   Dashing / GroundPounding / WallJumping / Landing   an ability is running
+--   Dashing / GroundPounding / WallJumping / Landing / SpinFloating
+--                        an ability is running
 --   Grounded / Rising / Falling                        derived from physics
 -- CAN_START below lists the states each ability may start from; starting
 -- from an ability state interrupts it.
 --
--- Per-frame work only exists while a dash or ground pound runs (one
+-- Per-frame work only exists while a dash, ground pound or spin-float runs (one
 -- PreSimulation connection, disconnected when the ability ends). Grounded
 -- transitions come from Humanoid.StateChanged events.
 
@@ -31,18 +36,19 @@ local Shared = ReplicatedStorage:WaitForChild("Shared")
 local Config = Shared:WaitForChild("Config")
 local GameConfig = require(Config:WaitForChild("GameConfig"))
 local MovementConfig = require(Config:WaitForChild("MovementConfig"))
+local AnimationConfig = require(Config:WaitForChild("AnimationConfig"))
 local MovementMath = require(Shared:WaitForChild("Math"):WaitForChild("MovementMath"))
-local Logger = require(Shared:WaitForChild("Utilities"):WaitForChild("Logger"))
 local Types = require(Shared:WaitForChild("Types"))
 
 local Client = script.Parent.Parent
+local CharacterAnimations = require(Client.Utilities.CharacterAnimations)
 local CharacterLifecycle = require(Client.Utilities.CharacterLifecycle)
 local Effects = require(Client.Utilities.Effects)
 local FeedbackController = require(script.Parent.FeedbackController)
 
 type MovementState = Types.MovementState
 type MovementAction = Types.MovementAction
-type Ability = "Dash" | "GroundPound" | "WallJump" | "Recovery"
+type Ability = "Dash" | "GroundPound" | "WallJump" | "Recovery" | "SpinFloat"
 
 type CharacterState = {
 	Context: CharacterLifecycle.Context,
@@ -62,9 +68,14 @@ type CharacterState = {
 	PoundId: number,
 	FeetOffset: number,
 	Mover: LinearVelocity,
+	Spinner: AngularVelocity,
+	FloatForce: VectorForce,
+	-- Humanoid.AutoRotate before the spin turned it off; nil when not spinning.
+	SavedAutoRotate: boolean?,
+	-- Animation played by the running ability; stopped when it ends.
+	AbilityTrack: AnimationTrack?,
 	Rig: Effects.CharacterRig,
 	RayParams: RaycastParams,
-	RollTrack: AnimationTrack?,
 }
 
 local Input = MovementConfig.Input
@@ -72,6 +83,7 @@ local DoubleJump = MovementConfig.DoubleJump
 local Dash = MovementConfig.Dash
 local GroundPound = MovementConfig.GroundPound
 local WallJump = MovementConfig.WallJump
+local SpinFloat = MovementConfig.SpinFloat
 
 local ACTION_DASH = "PlatformerDash"
 local ACTION_POUND = "PlatformerGroundPound"
@@ -81,13 +93,20 @@ local ABILITY_STATE: { [Ability]: MovementState } = {
 	GroundPound = "GroundPounding",
 	WallJump = "WallJumping",
 	Recovery = "Landing",
+	SpinFloat = "SpinFloating",
 }
 
 local CAN_START: { [string]: { [MovementState]: boolean } } = {
-	Dash = { Grounded = true, Rising = true, Falling = true, WallJumping = true },
-	GroundPound = { Rising = true, Falling = true, Dashing = true, WallJumping = true },
+	Dash = { Grounded = true, Rising = true, Falling = true, WallJumping = true, SpinFloating = true },
+	GroundPound = { Rising = true, Falling = true, Dashing = true, WallJumping = true, SpinFloating = true },
 	-- Double jump and wall jump (Dashing is handled by Dash.CancelOnJump).
-	AirJump = { Rising = true, Falling = true, WallJumping = true },
+	AirJump = { Rising = true, Falling = true, WallJumping = true, SpinFloating = true },
+}
+
+-- Abilities that only make sense in the air; landing ends them.
+local AIR_ONLY: { [Ability]: boolean } = {
+	WallJump = true,
+	SpinFloat = true,
 }
 
 local GROUNDED_STATES: { [Enum.HumanoidStateType]: boolean } = {
@@ -103,8 +122,6 @@ local JUMP_KEYS: { [Enum.KeyCode]: boolean } = {}
 for _, key in Input.JumpKeys do
 	JUMP_KEYS[key] = true
 end
-
-local logger = Logger.new("MovementController")
 
 local MovementController = {}
 
@@ -161,7 +178,18 @@ local function setVectorVelocity(state: CharacterState, velocity: Vector3)
 	mover.Enabled = true
 end
 
--- Stops whatever ability is running and releases its per-frame work.
+local function stopSpin(state: CharacterState)
+	state.Spinner.Enabled = false
+	state.Spinner.AngularVelocity = Vector3.zero
+	local saved = state.SavedAutoRotate
+	if saved ~= nil then
+		state.SavedAutoRotate = nil
+		state.Context.Humanoid.AutoRotate = saved
+	end
+end
+
+-- Stops whatever ability is running: releases its per-frame work, switches
+-- every constraint off, restores AutoRotate and stops its animation.
 local function endAbility(state: CharacterState)
 	local step = state.AbilityStep
 	state.AbilityStep = nil
@@ -169,8 +197,13 @@ local function endAbility(state: CharacterState)
 		step:Disconnect()
 	end
 	state.Mover.Enabled = false
-	if state.RollTrack and state.RollTrack.IsPlaying then
-		state.RollTrack:Stop(0.1)
+	stopSpin(state)
+	state.FloatForce.Enabled = false
+	state.FloatForce.Force = Vector3.zero
+	local track = state.AbilityTrack
+	state.AbilityTrack = nil
+	if track and track.IsPlaying then
+		track:Stop(0.1)
 	end
 	state.Ability = nil
 	state.AbilityToken += 1
@@ -204,7 +237,7 @@ local function onGrounded(state: CharacterState)
 	state.AirDashesUsed = 0
 	state.PoundUsedThisAir = false
 	state.LastWallPart = nil
-	if state.Ability == "WallJump" then
+	if state.Ability and AIR_ONLY[state.Ability] then
 		endAbility(state)
 	end
 end
@@ -213,16 +246,68 @@ end
 -- Abilities
 ------------------------------------------------------------------------------
 
+-- Spin + float after a double jump (see MovementConfig.SpinFloat for the
+-- maths). Horizontal control stays with the Humanoid: the LinearVelocity is
+-- off, the spin only constrains rotation, and the float only adds an upward
+-- force, so steering in the air works exactly as in a normal jump.
+local function startSpinFloat(state: CharacterState)
+	beginAbility(state, "SpinFloat")
+	local context = state.Context
+	local humanoid = context.Humanoid
+	local root = context.RootPart
+
+	state.SavedAutoRotate = humanoid.AutoRotate
+	humanoid.AutoRotate = false
+	state.Spinner.AngularVelocity = Vector3.zero
+	state.Spinner.Enabled = true
+	state.FloatForce.Force = Vector3.zero
+	state.FloatForce.Enabled = true
+	state.AbilityTrack = CharacterAnimations.Play(context, AnimationConfig.DoubleJumpSpin)
+
+	local startedAt = os.clock()
+	local totalTime = math.max(SpinFloat.SpinDuration, SpinFloat.FloatDuration)
+	local peakRate = math.rad(SpinFloat.SpinSpeed) * SpinFloat.SpinDirection
+	state.AbilityStep = RunService.PreSimulation:Connect(function()
+		local elapsed = os.clock() - startedAt
+		if elapsed >= totalTime then
+			endAbility(state) -- back to a normal fall
+			return
+		end
+
+		if elapsed < SpinFloat.SpinDuration then
+			local rate = peakRate * MovementMath.SpinProfile(elapsed / SpinFloat.SpinDuration)
+			state.Spinner.AngularVelocity = Vector3.new(0, rate, 0)
+		elseif state.Spinner.Enabled then
+			stopSpin(state) -- spin finished first; the float may continue
+		end
+
+		local lift = 0
+		if root.AssemblyLinearVelocity.Y <= SpinFloat.FloatBelowVerticalSpeed then
+			local fade = MovementMath.FloatFade(elapsed, SpinFloat.FloatDuration, SpinFloat.FloatFadeTime)
+			lift = MovementMath.FloatLiftForce(root.AssemblyMass, Workspace.Gravity, SpinFloat.FallGravityScale, fade)
+		end
+		state.FloatForce.Force = Vector3.new(0, lift, 0)
+	end)
+end
+
 local function doDoubleJump(state: CharacterState)
 	if state.Ability == "WallJump" then
 		endAbility(state)
 	end
 	local root = state.Context.RootPart
 	local velocity = root.AssemblyLinearVelocity
-	root.AssemblyLinearVelocity = Vector3.new(velocity.X, DoubleJump.Velocity, velocity.Z)
+	local upward = DoubleJump.Velocity + (if SpinFloat.Enabled then SpinFloat.UpwardBoost else 0)
+	root.AssemblyLinearVelocity = Vector3.new(velocity.X, upward, velocity.Z)
 	state.AirJumpsUsed += 1
-	Effects.DoubleJumpBurst(state.Rig)
+	local trailTime = DoubleJump.Effects.TrailDuration
+	if SpinFloat.Enabled and SpinFloat.TrailFollowsSpin then
+		trailTime = math.max(trailTime, SpinFloat.SpinDuration)
+	end
+	Effects.DoubleJumpBurst(state.Rig, trailTime)
 	report("DoubleJump")
+	if SpinFloat.Enabled then
+		startSpinFloat(state)
+	end
 end
 
 -- Closest wall within reach: rays toward the movement input first, then a
@@ -304,30 +389,6 @@ local function tryWallJump(state: CharacterState, now: number): boolean
 	return true
 end
 
-local function playRoll(state: CharacterState)
-	if Dash.RollAnimationId == "" then
-		return
-	end
-	local track = state.RollTrack
-	if not track then
-		local animator = state.Context.Humanoid:FindFirstChildOfClass("Animator")
-		if not animator then
-			return
-		end
-		local animation = state.Context.Cleanup:Add(Instance.new("Animation"))
-		animation.AnimationId = Dash.RollAnimationId
-		local ok, result = pcall(animator.LoadAnimation, animator, animation)
-		if not ok then
-			logger:Warn("RollAnimationFailed", { Id = Dash.RollAnimationId, Error = result })
-			return
-		end
-		track = result :: AnimationTrack
-		state.Context.Cleanup:Add(track)
-		state.RollTrack = track
-	end
-	(track :: AnimationTrack):Play(0.05, 1, Dash.RollAnimationSpeed)
-end
-
 local function tryDash(state: CharacterState): boolean
 	if not Dash.Enabled then
 		return false
@@ -357,7 +418,7 @@ local function tryDash(state: CharacterState): boolean
 	root.CFrame = CFrame.lookAt(root.Position, root.Position + direction)
 	state.DashReadyAt = now + Dash.Cooldown
 	setPlaneVelocity(state, direction * Dash.InitialSpeed)
-	playRoll(state)
+	state.AbilityTrack = CharacterAnimations.Play(state.Context, AnimationConfig.DashRoll)
 	Effects.DashBurst(state.Rig, Dash.Duration)
 	report("Dash")
 
@@ -548,6 +609,24 @@ local function onSpawn(context: CharacterLifecycle.Context)
 	mover.Enabled = false
 	mover.Parent = root
 
+	local spinner = context.Cleanup:Add(Instance.new("AngularVelocity"))
+	spinner.Name = "PlatformerSpin"
+	spinner.Attachment0 = attachment
+	spinner.RelativeTo = Enum.ActuatorRelativeTo.World
+	spinner.MaxTorque = SpinFloat.MaxTorque
+	spinner.ReactionTorqueEnabled = false
+	spinner.Enabled = false
+	spinner.Parent = root
+
+	local floatForce = context.Cleanup:Add(Instance.new("VectorForce"))
+	floatForce.Name = "PlatformerFloat"
+	floatForce.Attachment0 = attachment
+	floatForce.RelativeTo = Enum.ActuatorRelativeTo.World
+	floatForce.ApplyAtCenterOfMass = true
+	floatForce.Force = Vector3.zero
+	floatForce.Enabled = false
+	floatForce.Parent = root
+
 	local rayParams = RaycastParams.new()
 	rayParams.FilterType = Enum.RaycastFilterType.Exclude
 	rayParams.FilterDescendantsInstances = { context.Character }
@@ -573,9 +652,12 @@ local function onSpawn(context: CharacterLifecycle.Context)
 		PoundId = 0,
 		FeetOffset = feetOffset,
 		Mover = mover,
+		Spinner = spinner,
+		FloatForce = floatForce,
+		SavedAutoRotate = nil,
+		AbilityTrack = nil,
 		Rig = Effects.CreateCharacterRig(root, feetOffset, context.Cleanup),
 		RayParams = rayParams,
-		RollTrack = nil,
 	}
 
 	context.Cleanup:Connect(humanoid.StateChanged, function(old: Enum.HumanoidStateType, new: Enum.HumanoidStateType)
@@ -652,6 +734,7 @@ function MovementController.Start()
 	assert(remotes, "MovementController.Init must run before Start")
 	started = true
 
+	CharacterAnimations.Preload({ AnimationConfig.DashRoll, AnimationConfig.DoubleJumpSpin })
 	CharacterLifecycle.Register("MovementController", {
 		OnSpawn = onSpawn,
 		OnDied = onDied,

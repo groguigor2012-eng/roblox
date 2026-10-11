@@ -3,9 +3,11 @@
 -- remotes), verifies the remote contract, then starts each controller once:
 --   1. CharacterLifecycle           character spawn/death/despawn fan-out
 --   2. CollectibleVisualController  collectible visuals + pickup requests
---   3. MovementController           move set and local effects
---   4. HeartUIController            three-heart health display
---   5. FeedbackController           damage flash + camera shake
+--   3. MovementController           move set (incl. double-jump spin/float) and local effects
+--   4. AttackController             right-click attack animation (no remotes;
+--                                   reads MovementController.GetState)
+--   5. HeartUIController            three-heart health display
+--   6. FeedbackController           damage flash + camera shake
 -- Controllers register with CharacterLifecycle, so they re-bind to every new
 -- character automatically. A controller that fails to start is logged and
 -- skipped; the others keep working (e.g. a UI error never disables movement).
@@ -25,6 +27,7 @@ local CharacterLifecycle = require(Client.Utilities.CharacterLifecycle)
 local Controllers = Client.Controllers
 local CollectibleVisualController = require(Controllers.CollectibleVisualController)
 local MovementController = require(Controllers.MovementController)
+local AttackController = require(Controllers.AttackController)
 local HeartUIController = require(Controllers.HeartUIController)
 local FeedbackController = require(Controllers.FeedbackController)
 
@@ -83,5 +86,6 @@ if remotes then
 else
 	logger:Error("NetworkedControllersSkipped", { Reason = "remote contract unavailable" })
 end
+start("AttackController", AttackController.Start)
 start("HeartUIController", HeartUIController.Start)
 start("FeedbackController", FeedbackController.Start)

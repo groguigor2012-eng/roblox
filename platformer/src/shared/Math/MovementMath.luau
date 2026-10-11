@@ -111,6 +111,31 @@ function MovementMath.JumpVelocityFromHeight(height: number, gravity: number): n
 	return math.sqrt(2 * math.max(gravity, 0) * math.max(height, 0))
 end
 
+-- Spin rate profile over normalised time: sin(pi * s), 0 at both ends and 1
+-- in the middle. Input is clamped to [0, 1].
+function MovementMath.SpinProfile(s: number): number
+	return math.sin(math.pi * clamp01(s))
+end
+
+-- Float strength over the window: 1 until the last fadeTime seconds, then a
+-- linear drop to 0 at duration; 0 outside [0, duration].
+function MovementMath.FloatFade(elapsed: number, duration: number, fadeTime: number): number
+	if elapsed < 0 or elapsed >= duration then
+		return 0
+	end
+	local remaining = duration - elapsed
+	if fadeTime <= 0 or remaining >= fadeTime then
+		return 1
+	end
+	return remaining / fadeTime
+end
+
+-- Upward force that leaves `gravityScale` of gravity acting on `mass`,
+-- scaled by the fade: mass * gravity * (1 - gravityScale) * fade.
+function MovementMath.FloatLiftForce(mass: number, gravity: number, gravityScale: number, fade: number): number
+	return mass * gravity * (1 - math.clamp(gravityScale, 0, 1)) * math.clamp(fade, 0, 1)
+end
+
 -- Distance from the HumanoidRootPart centre down to the feet.
 --   R15: HipHeight + rootHeight / 2
 --   R6:  rootHeight / 2 + legHeight   (R6 HipHeight is 0; the legs carry the height)
