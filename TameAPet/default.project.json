@@ -1,0 +1,104 @@
+{
+  "name": "TameAPet",
+  "tree": {
+    "$className": "DataModel",
+
+    "Workspace": {
+      "$properties": {
+        "StreamingEnabled": true,
+        "FallenPartsDestroyHeight": -200
+      },
+      "Map": { "$className": "Folder" },
+      "MapZones": { "$className": "Folder" },
+      "ActiveEggs": { "$className": "Folder" },
+      "ActiveItemPickups": { "$className": "Folder" },
+      "ActiveMounts": { "$className": "Folder" },
+      "ActivePets": { "$className": "Folder" },
+      "NPCs": { "$className": "Folder" },
+      "WorldSpawn": { "$className": "Folder" }
+    },
+
+    "ReplicatedStorage": {
+      "Remotes": {
+        "$className": "Folder",
+        "RequestSync": { "$className": "RemoteFunction" },
+        "Purchase": { "$className": "RemoteFunction" },
+        "EquipCompass": { "$className": "RemoteFunction" },
+        "EquipPet": { "$className": "RemoteFunction" },
+        "TamePet": { "$className": "RemoteFunction" },
+        "SummonMount": { "$className": "RemoteFunction" },
+        "Dismount": { "$className": "RemoteFunction" },
+        "MountInput": { "$className": "UnreliableRemoteEvent" },
+        "ProfileSync": { "$className": "RemoteEvent" },
+        "CompassTarget": { "$className": "RemoteEvent" },
+        "HatchResult": { "$className": "RemoteEvent" },
+        "MountState": { "$className": "RemoteEvent" },
+        "Notify": { "$className": "RemoteEvent" }
+      },
+      "Shared": { "$path": "src/shared" },
+      "Config": { "$path": "src/config" },
+      "UIAssets": {
+        "$className": "Folder",
+        "PetPreviews": { "$className": "Folder" }
+      },
+      "Effects": { "$className": "Folder" }
+    },
+
+    "ServerScriptService": {
+      "ServerBootstrap": { "$path": "src/server/ServerBootstrap.server.luau" },
+      "Services": { "$path": "src/server/Services" },
+      "Data": { "$path": "src/server/Data" },
+      "Security": { "$path": "src/server/Security" },
+      "World": { "$path": "src/server/World" },
+      "Packages": { "$path": "src/server/Packages" }
+    },
+
+    "ServerStorage": {
+      "EggModels": { "$className": "Folder" },
+      "ItemModels": { "$className": "Folder" },
+      "PetModels": { "$className": "Folder" },
+      "MountModels": { "$className": "Folder" },
+      "ServerAssets": { "$className": "Folder" }
+    },
+
+    "StarterGui": {
+      "MainHUD": {
+        "$className": "ScreenGui",
+        "$properties": { "ResetOnSpawn": false, "ZIndexBehavior": "Sibling", "DisplayOrder": 1 }
+      },
+      "InventoryUI": {
+        "$className": "ScreenGui",
+        "$properties": { "ResetOnSpawn": false, "ZIndexBehavior": "Sibling", "DisplayOrder": 5, "Enabled": false }
+      },
+      "ShopUI": {
+        "$className": "ScreenGui",
+        "$properties": { "ResetOnSpawn": false, "ZIndexBehavior": "Sibling", "DisplayOrder": 5, "Enabled": false }
+      },
+      "HatchUI": {
+        "$className": "ScreenGui",
+        "$properties": { "ResetOnSpawn": false, "ZIndexBehavior": "Sibling", "DisplayOrder": 10, "Enabled": false, "IgnoreGuiInset": true }
+      },
+      "NotificationsUI": {
+        "$className": "ScreenGui",
+        "$properties": { "ResetOnSpawn": false, "ZIndexBehavior": "Sibling", "DisplayOrder": 20 }
+      }
+    },
+
+    "StarterPlayer": {
+      "StarterPlayerScripts": {
+        "ClientBootstrap": { "$path": "src/client/ClientBootstrap.client.luau" },
+        "Controllers": { "$path": "src/client/Controllers" },
+        "UIControllers": { "$path": "src/client/UIControllers" },
+        "InputControllers": { "$path": "src/client/InputControllers" }
+      }
+    },
+
+    "Lighting": {
+      "$properties": {
+        "ClockTime": 14,
+        "Brightness": 2.5,
+        "Technology": "Future"
+      }
+    }
+  }
+}
