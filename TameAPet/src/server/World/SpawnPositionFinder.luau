@@ -13,9 +13,12 @@ local SpawnPositionFinder = {}
 
 local function mapGeometry(): { Instance }
 	local list: { Instance } = { workspace.Terrain }
-	local map = workspace:FindFirstChild("Map")
-	if map then
-		table.insert(list, map)
+	-- Map geometry plus the spawn pad and NPC stands, so their NoSpawn tags are honoured.
+	for _, name in { "Map", "WorldSpawn", "NPCs" } do
+		local folder = workspace:FindFirstChild(name)
+		if folder then
+			table.insert(list, folder)
+		end
 	end
 	return list
 end

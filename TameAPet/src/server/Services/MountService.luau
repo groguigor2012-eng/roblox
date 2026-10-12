@@ -269,12 +269,19 @@ local function rayParamsFor(mount: Mount): RaycastParams
 		exclusionCache[mount.player] = params
 	end
 	local exclude: { Instance } = { mount.rig.model, activeFolder }
-	if mount.player.Character then
-		table.insert(exclude, mount.player.Character)
+	for _, other in Players:GetPlayers() do
+		if other.Character then
+			table.insert(exclude, other.Character)
+		end
 	end
 	local pets = workspace:FindFirstChild("ActivePets")
 	if pets then
 		table.insert(exclude, pets)
+	end
+	local map = workspace:FindFirstChild("Map")
+	local nonSolid = map and map:FindFirstChild("NonSolid")
+	if nonSolid then
+		table.insert(exclude, nonSolid)
 	end
 	params.FilterDescendantsInstances = exclude
 	return params

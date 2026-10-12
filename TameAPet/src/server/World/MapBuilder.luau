@@ -227,7 +227,9 @@ end
 local function buildLake(parent: Instance, zone, rng: Random)
 	zoneFloor(parent, zone, Enum.Material.Sand, Color3.fromRGB(200, 190, 150), 0.4)
 	local region = zone.region
-	block(parent, {
+	-- Water is queryable (so spawn rays stop on it and reject it via NoSpawn) but lives in
+	-- Map.NonSolid, which mount ground checks ignore.
+	block(folder(folder(workspace, "Map"), "NonSolid"), {
 		Name = "Water",
 		Size = Vector3.new(region.size.X - 40, 3, region.size.Z - 40),
 		Position = Vector3.new(region.center.X, 1.9, region.center.Z),
@@ -235,7 +237,7 @@ local function buildLake(parent: Instance, zone, rng: Random)
 		Color = Color3.fromRGB(60, 120, 200),
 		Transparency = 0.45,
 		CanCollide = false,
-		CanQuery = false,
+		CanQuery = true,
 		CastShadow = false,
 		NoSpawn = true,
 	})

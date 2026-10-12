@@ -48,6 +48,7 @@ local Services
 local adapter
 local sessions: { [Player]: any } = {}
 local syncQueued: { [Player]: boolean } = {}
+local leaving: { [Player]: boolean } = {}
 
 local txContext: Transactions.Context
 local viewContext: ProfileView.ViewContext
@@ -187,7 +188,7 @@ local function onPlayerAdded(player: Player)
 
 	session.OnSessionEnd:Connect(function()
 		sessions[player] = nil
-		if player.Parent == Players then
+		if player.Parent == Players and not leaving[player] then
 			-- Another server stole the session lock (player joined elsewhere).
 			player:Kick("Your profile was opened on another server. Please rejoin.")
 		end
@@ -205,6 +206,7 @@ local function onPlayerAdded(player: Player)
 end
 
 local function onPlayerRemoving(player: Player)
+	leaving[player] = true
 	DataService.ProfileReleasing:Fire(player)
 	local session = sessions[player]
 	sessions[player] = nil
@@ -213,6 +215,9 @@ local function onPlayerRemoving(player: Player)
 		-- ProfileStore saves and releases the session lock.
 		session:EndSession()
 	end
+	task.defer(function()
+		leaving[player] = nil
+	end)
 end
 
 -- Lifecycle ------------------------------------------------------------------------------------

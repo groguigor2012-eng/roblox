@@ -203,4 +203,10 @@ record.
   playtesting. Adjust them in `MountConfig`.
 - **Locked zones** have no physical barrier. A pass is needed to hatch eggs, collect items or
   track eggs there, and the compass ignores eggs in zones you haven't unlocked.
+- **Egg placement checks bounding boxes.** The clearance check uses `GetPartBoundsInBox`, which
+  looks at each part's bounding box rather than its real shape. Eggs therefore rarely spawn on
+  rounded hills or ramp slopes.
+- **Studio load cancellation.** The mock store used in Studio ignores the `Cancel` callback, so
+  a profile load still finishes after the player leaves. That profile is then released straight
+  away, so nothing is lost. Live servers do cancel the load.
 - **No developer products.** There are no Robux purchases. All currency is earned in-game.

@@ -236,7 +236,9 @@ end
 -- have one, plus a UIScale that keeps it sized for the current screen.
 function UIKit.screen(name: string, displayOrder: number, ignoreInset: boolean?): ScreenGui
 	local playerGui = Players.LocalPlayer:WaitForChild("PlayerGui")
-	local gui = playerGui:WaitForChild(name, 5)
+	local starterGui = game:GetService("StarterGui")
+	-- StarterGui copies arrive with the first character; only wait if the place has one.
+	local gui = if starterGui:FindFirstChild(name) then playerGui:WaitForChild(name, 20) else playerGui:FindFirstChild(name)
 	if not gui then
 		gui = UIKit.new("ScreenGui", {
 			Name = name,
@@ -249,6 +251,12 @@ function UIKit.screen(name: string, displayOrder: number, ignoreInset: boolean?)
 	end
 	gui.ResetOnSpawn = false
 	gui:ClearAllChildren()
+	-- If a StarterGui copy shows up after we built our own, drop the late duplicate.
+	playerGui.ChildAdded:Connect(function(child)
+		if child ~= gui and child.Name == name and child:IsA("ScreenGui") then
+			child:Destroy()
+		end
+	end)
 	local uiScale = UIKit.new("UIScale", { Name = "AutoScale", Parent = gui })
 	local camera = workspace.CurrentCamera
 	local function rescale()

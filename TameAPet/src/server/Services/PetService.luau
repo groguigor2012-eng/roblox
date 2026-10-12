@@ -135,8 +135,11 @@ local function equipPet(player: Player, petId: string)
 	Services.DataService.markDirty(player)
 	if previous ~= data.equippedPetId then
 		-- Riding a pet that is no longer equipped is not allowed.
-		Services.MountService.dismount(player, "PetChanged")
-		PetService.spawnCompanion(player)
+		if Services.MountService.isMounted(player) then
+			Services.MountService.dismount(player, "PetChanged") -- respawns the companion
+		else
+			PetService.spawnCompanion(player)
+		end
 	end
 	return Security.ok()
 end
