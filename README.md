@@ -1,3 +1,7 @@
+> This repository contains two independent Rojo projects:
+> - **Poolrooms** (this README, root `default.project.json`)
+> - **[Tame a Pet](TameAPet/README.md)**, an exploration / egg-hatching / taming / mount game (`TameAPet/default.project.json`)
+
 # Poolrooms
 
 An infinite, procedurally generated **Poolrooms** for Roblox: white-tiled liminal halls filled

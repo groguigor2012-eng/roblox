@@ -117,6 +117,14 @@ function MountService.dismount(player: Player, reason: string)
 		character:PivotTo(
 			CFrame.new(rootCFrame.Position + Vector3.new(0, MountConfig.DismountLift, 0)) * CFrame.Angles(0, yaw, 0)
 		)
+		-- While seated the character was part of the server-owned mount assembly; hand its
+		-- physics back to the player so normal movement stays responsive.
+		local characterRoot = character:FindFirstChild("HumanoidRootPart")
+		if characterRoot and characterRoot:IsA("BasePart") and player.Parent == Players then
+			pcall(function()
+				characterRoot:SetNetworkOwner(player)
+			end)
+		end
 	end
 
 	if player.Parent == Players then

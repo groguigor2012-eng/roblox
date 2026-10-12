@@ -276,9 +276,6 @@ local function buildPeaks(parent: Instance, zone, rng: Random)
 			CFrame = CFrame.new(p + Vector3.new(0, h + 0.5, 0)),
 			Material = Enum.Material.Snow,
 			Color = Color3.fromRGB(240, 244, 255),
-			CanCollide = false,
-			CanQuery = false,
-			NoSpawn = true,
 		})
 		if i <= 3 then
 			local rampLength = h * 2.4

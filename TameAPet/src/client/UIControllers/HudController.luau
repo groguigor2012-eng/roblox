@@ -58,8 +58,7 @@ local function statRow(parent: Instance, icon: string, order: number, accent: Co
 end
 
 local function keyName(keyCode: Enum.KeyCode): string
-	return UserInputService:GetStringForKeyCode(keyCode) ~= "" and UserInputService:GetStringForKeyCode(keyCode)
-		or keyCode.Name
+	return keyCode.Name
 end
 
 local function refreshHint()
