@@ -1,0 +1,2914 @@
+<roblox xmlns:xmime="http://www.w3.org/2005/05/xmlmime" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.roblox.com/roblox.xsd" version="4">
+	<Item class="Workspace" referent="RBX00000001">
+		<Properties>
+			<string name="Name">Workspace</string>
+		</Properties>
+	</Item>
+	<Item class="ReplicatedStorage" referent="RBX00000002">
+		<Properties>
+			<string name="Name">ReplicatedStorage</string>
+		</Properties>
+		<Item class="Folder" referent="RBX00000003">
+			<Properties>
+				<string name="Name">Shutter</string>
+			</Properties>
+			<Item class="ModuleScript" referent="RBX00000004">
+				<Properties>
+					<string name="Name">Config</string>
+					<ProtectedString name="Source"><![CDATA[--!strict
+-- THE SHUTTER: every tuning value in one place.
+-- Shared by server and client. The SERVER is the authority for every value that
+-- matters (speed, battery, observation); the client only reads these to draw UI
+-- and to predict the battery bar between server updates.
+
+local Config = {}
+
+-- Build the small test map (server/DemoLevel) when the place has no CameraOnly content.
+Config.DEMO_LEVEL = true
+
+-- CollectionService tags ---------------------------------------------------------
+Config.Tags = {
+	CameraOnly = "CameraOnly", -- visible ONLY through the camcorder (doors, clues, anomalies, the Watcher)
+	NakedEyeOnly = "NakedEyeOnly", -- visible ONLY to the naked eye (the "pristine" layer that hides what is real)
+	Entity = "ShutterEntity", -- a Watcher model driven by WatcherService
+	Door = "ShutterDoor", -- hidden door that opens when its CameraOnly prompt is used
+	Pickup = "ShutterPickup", -- collectible (clue / battery) behind a CameraOnly prompt
+	WatcherSpawn = "WatcherSpawn", -- optional BasePart(s) marking where Watchers (re)spawn
+}
+
+-- Player attributes (written by the server only; clients read them) ------------------
+Config.Attributes = {
+	Battery = "ShutterBattery", -- number 0..MAX_BATTERY
+	CamcorderRaised = "ShutterCamcorder", -- boolean
+	Sprinting = "ShutterSprinting", -- boolean
+	Clues = "ShutterClues", -- number of clues collected
+	-- On Watcher models:
+	WatcherState = "WatcherState", -- "Idle" | "Stalking" | "Hunting" | "Frozen" | "Cooldown"
+	WatcherFrozen = "WatcherFrozen", -- boolean
+}
+
+-- Remote names (ReplicatedStorage > Shutter > Remotes) --------------------------------
+Config.Remotes = {
+	CamcorderToggle = "CamcorderToggle", -- RemoteEvent, client -> server: (wantRaised: boolean)
+	SprintState = "SprintState", -- RemoteEvent, client -> server: (wantSprint: boolean)
+	LookUpdate = "LookUpdate", -- UnreliableRemoteEvent, client -> server: (lookDirection: Vector3)
+	WatcherFeedback = "WatcherFeedback", -- RemoteEvent, server -> client: (kind: string, data: any)
+}
+
+-- Movement (studs / second) -------------------------------------------------------------
+Config.Movement = {
+	WALK_SPEED = 16,
+	SPRINT_SPEED = 23,
+	CAMCORDER_SPEED = 9,
+	SPRINT_REQUEST_RATE = 12, -- max sprint packets per second before they are ignored
+	-- Server-side speed sanity check (catches clients that rewrite their own WalkSpeed).
+	ANTI_SPEED_ENABLED = true,
+	ANTI_SPEED_INTERVAL = 0.5, -- seconds between position samples
+	ANTI_SPEED_TOLERANCE = 1.6, -- multiplier on the allowed speed (absorbs network jitter)
+	ANTI_SPEED_SLACK = 4, -- extra studs allowed per sample
+	ANTI_SPEED_STRIKES = 3, -- consecutive bad samples before rubber-banding
+}
+
+-- Camcorder & battery ---------------------------------------------------------------------
+Config.Camcorder = {
+	MAX_BATTERY = 100,
+	DRAIN_PER_SECOND = 10, -- while raised
+	RECHARGE_PER_SECOND = 3, -- while lowered...
+	RECHARGE_DELAY = 1.5, -- ...after being lowered for this long
+	MIN_BATTERY_TO_RAISE = 5, -- stops raise/drop flicker at an empty battery
+	TOGGLE_COOLDOWN = 0.25, -- seconds between accepted raise/lower requests
+	BATTERY_REPLICATE_INTERVAL = 0.2, -- how often the Battery attribute is pushed to clients
+	RESET_BATTERY_ON_SPAWN = true,
+
+	-- Look direction (needed to know what a player is filming)
+	LOOK_SEND_RATE = 15, -- client packets per second while raised
+	LOOK_MAX_RATE = 40, -- server drops packets above this rate
+	LOOK_MAX_AGE = 0.4, -- a look sample older than this is ignored (no free "frozen" watcher)
+	LOOK_MAX_BODY_YAW = 75, -- degrees; while filming the body faces the camera (first person)
+
+	-- Client presentation
+	FILM_FIELD_OF_VIEW = 55,
+	NAKED_FIELD_OF_VIEW = 70,
+	FORCE_FIRST_PERSON_WHILE_FILMING = true,
+}
+
+-- Interaction with CameraOnly prompts ------------------------------------------------------
+Config.Interaction = {
+	EXTRA_DISTANCE = 2, -- server allows prompt.MaxActivationDistance + this
+	MAX_LOOK_ANGLE = 70, -- degrees between the player's view and the object
+	DEBOUNCE = 0.5, -- seconds per player per prompt
+	DEFAULT_BATTERY_PICKUP = 35,
+	DOOR_FADE_TIME = 0.6,
+}
+
+-- THE WATCHER -------------------------------------------------------------------------------
+Config.Watcher = {
+	AUTO_SPAWN_IF_MISSING = true, -- build a default Watcher rig if no ShutterEntity exists
+	THINK_RATE = 20, -- AI / observation ticks per second
+
+	STALK_SPEED = 11, -- far away and unobserved
+	HUNT_SPEED = 18, -- close: faster than walking (16), slower than sprinting (23)
+	HUNT_RANGE = 45, -- switch from stalking to hunting inside this distance
+	DETECT_RANGE = 260, -- ignores players farther than this
+	CATCH_RANGE = 3.5, -- horizontal distance that counts as a catch
+	CATCH_HEIGHT = 7, -- max vertical difference for a catch
+	CATCH_DAMAGE = 100, -- 100 = instant death on a default 100 HP humanoid
+	COOLDOWN_AFTER_CATCH = 6,
+
+	-- Observation: "look to survive"
+	VIEW_RANGE = 160, -- a camcorder cannot freeze it from farther than this
+	VIEW_HALF_ANGLE = 34, -- degrees; the cone the camcorder must point within
+	MIN_FREEZE_HOLD = 0.15, -- seconds it stays frozen after the last observation (anti-flicker)
+
+	-- Pathfinding
+	PATH_REFRESH = 0.6, -- seconds between path recomputes while chasing
+	PATH_REPATH_DISTANCE = 6, -- recompute early if the target moved this far
+	AGENT_RADIUS = 2,
+	AGENT_HEIGHT = 8,
+
+	-- Relocation: it is never really far behind you
+	RELOCATE_DISTANCE = 180,
+	RELOCATE_COOLDOWN = 20,
+	RELOCATE_MIN = 40,
+	RELOCATE_MAX = 65,
+
+	-- Fallback spawn if there is no WatcherSpawn part: this far from the first SpawnLocation
+	FALLBACK_SPAWN_OFFSET = Vector3.new(0, 0, -90),
+}
+
+-- Client FX ----------------------------------------------------------------------------------
+Config.FX = {
+	STATIC_START_DISTANCE = 70, -- camcorder interference begins inside this range
+	-- Optional sound ids ("rbxassetid://..."); leave "" to skip.
+	CAMCORDER_ON_SOUND = "",
+	CAMCORDER_OFF_SOUND = "",
+	STATIC_LOOP_SOUND = "",
+	JUMPSCARE_SOUND = "",
+}
+
+return Config
+]]></ProtectedString>
+				</Properties>
+			</Item>
+			<Item class="ModuleScript" referent="RBX00000005">
+				<Properties>
+					<string name="Name">Net</string>
+					<ProtectedString name="Source"><![CDATA[--!strict
+-- Single access point for THE SHUTTER's remotes.
+-- Server: finds each remote in ReplicatedStorage > Shutter > Remotes, creating any that
+--         are missing (so a hand-built place still works).
+-- Client: waits for the server-created remotes.
+
+local RunService = game:GetService("RunService")
+
+local Config = require(script.Parent:WaitForChild("Config"))
+
+local IS_SERVER = RunService:IsServer()
+local CLIENT_TIMEOUT = 30
+
+local function getFolder(): Folder
+	local root = script.Parent
+	if IS_SERVER then
+		local existing = root:FindFirstChild("Remotes")
+		if existing and existing:IsA("Folder") then
+			return existing
+		end
+		local folder = Instance.new("Folder")
+		folder.Name = "Remotes"
+		folder.Parent = root
+		return folder
+	end
+	local found = root:WaitForChild("Remotes", CLIENT_TIMEOUT)
+	assert(found and found:IsA("Folder"), "[Shutter] ReplicatedStorage.Shutter.Remotes is missing")
+	return found
+end
+
+local folder = getFolder()
+
+local function getRemote(name: string, className: string): Instance
+	if IS_SERVER then
+		local existing = folder:FindFirstChild(name)
+		if existing and existing.ClassName == className then
+			return existing
+		end
+		if existing then
+			warn(`[Shutter] Remote {name} is a {existing.ClassName}, expected {className}; replacing it`)
+			existing:Destroy()
+		end
+		local remote = Instance.new(className)
+		remote.Name = name
+		remote.Parent = folder
+		return remote
+	end
+	local found = folder:WaitForChild(name, CLIENT_TIMEOUT)
+	assert(found and found.ClassName == className, `[Shutter] Remote {name} ({className}) is missing`)
+	return found
+end
+
+local Net = {
+	CamcorderToggle = getRemote(Config.Remotes.CamcorderToggle, "RemoteEvent") :: RemoteEvent,
+	SprintState = getRemote(Config.Remotes.SprintState, "RemoteEvent") :: RemoteEvent,
+	LookUpdate = getRemote(Config.Remotes.LookUpdate, "UnreliableRemoteEvent") :: UnreliableRemoteEvent,
+	WatcherFeedback = getRemote(Config.Remotes.WatcherFeedback, "RemoteEvent") :: RemoteEvent,
+}
+
+return Net
+]]></ProtectedString>
+				</Properties>
+			</Item>
+			<Item class="Folder" referent="RBX00000006">
+				<Properties>
+					<string name="Name">Remotes</string>
+				</Properties>
+				<Item class="RemoteEvent" referent="RBX00000007">
+					<Properties>
+						<string name="Name">CamcorderToggle</string>
+					</Properties>
+				</Item>
+				<Item class="RemoteEvent" referent="RBX00000008">
+					<Properties>
+						<string name="Name">SprintState</string>
+					</Properties>
+				</Item>
+				<Item class="UnreliableRemoteEvent" referent="RBX00000009">
+					<Properties>
+						<string name="Name">LookUpdate</string>
+					</Properties>
+				</Item>
+				<Item class="RemoteEvent" referent="RBX0000000A">
+					<Properties>
+						<string name="Name">WatcherFeedback</string>
+					</Properties>
+				</Item>
+			</Item>
+		</Item>
+	</Item>
+	<Item class="ServerScriptService" referent="RBX0000000B">
+		<Properties>
+			<string name="Name">ServerScriptService</string>
+		</Properties>
+		<Item class="Folder" referent="RBX0000000C">
+			<Properties>
+				<string name="Name">Shutter</string>
+			</Properties>
+			<Item class="ModuleScript" referent="RBX0000000D">
+				<Properties>
+					<string name="Name">CamcorderService</string>
+					<ProtectedString name="Source"><![CDATA[--!strict
+-- CamcorderService (server): the authority for camcorder state, battery and movement speed.
+--
+-- * Clients only REQUEST to raise/lower the camcorder or to sprint. The server decides.
+-- * Battery drains/recharges here, on the server clock. Clients see it as a Player attribute.
+-- * Humanoid.WalkSpeed is set here, and a position-sampling check rubber-bands clients that
+--   move faster than the server allows (clients own their character's physics).
+-- * The client's look direction is accepted only as a unit vector, rate-limited, checked
+--   against the character's facing, and stamped with server time. The origin is always the
+--   server's own copy of the head position.
+--
+-- Other server systems use the public API at the bottom (isFilming, getLook, ...).
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+
+local Shared = ReplicatedStorage:WaitForChild("Shutter")
+local Config = require(Shared:WaitForChild("Config"))
+local Net = require(Shared:WaitForChild("Net"))
+
+local CAM = Config.Camcorder
+local MOVE = Config.Movement
+local ATTR = Config.Attributes
+
+export type PlayerState = {
+	player: Player,
+	battery: number,
+	raised: boolean,
+	sprintRequested: boolean,
+	loweredAt: number,
+	lastToggleAt: number,
+	-- look
+	lookDirection: Vector3?,
+	lookTime: number,
+	lookTokens: number,
+	-- sprint rate limit
+	sprintTokens: number,
+	-- replication
+	lastBatterySent: number,
+	lastBatterySentAt: number,
+	-- anti-speed
+	lastSamplePosition: Vector3?,
+	lastSampleAt: number,
+	lastValidCFrame: CFrame?,
+	strikes: number,
+	ignoreSpeedUntil: number,
+	previousAllowedSpeed: number,
+	-- character
+	humanoid: Humanoid?,
+	rootPart: BasePart?,
+	head: BasePart?,
+	characterConnections: { RBXScriptConnection },
+}
+
+type ChangedCallback = (player: Player, raised: boolean, reason: string) -> ()
+
+local CamcorderService = {}
+
+local states: { [Player]: PlayerState } = {}
+local changedCallbacks: { ChangedCallback } = {}
+local started = false
+
+-- Helpers ----------------------------------------------------------------------------------
+
+local function isFiniteVector(v: Vector3): boolean
+	return v.X == v.X and v.Y == v.Y and v.Z == v.Z and math.abs(v.X) < 1e6 and math.abs(v.Y) < 1e6 and math.abs(v.Z) < 1e6
+end
+
+local function isAlive(state: PlayerState): boolean
+	local humanoid = state.humanoid
+	return humanoid ~= nil and humanoid.Health > 0 and humanoid.Parent ~= nil and state.rootPart ~= nil
+end
+
+local function horizontal(v: Vector3): Vector3
+	return Vector3.new(v.X, 0, v.Z)
+end
+
+local function pushBattery(state: PlayerState, force: boolean)
+	local now = os.clock()
+	local value = math.floor(state.battery * 10 + 0.5) / 10
+	if not force then
+		if value == state.lastBatterySent then
+			return
+		end
+		local atEdge = value <= 0 or value >= CAM.MAX_BATTERY
+		if not atEdge and now - state.lastBatterySentAt < CAM.BATTERY_REPLICATE_INTERVAL then
+			return
+		end
+	end
+	state.lastBatterySent = value
+	state.lastBatterySentAt = now
+	state.player:SetAttribute(ATTR.Battery, value)
+end
+
+local function allowedSpeed(state: PlayerState): number
+	if state.raised then
+		return MOVE.CAMCORDER_SPEED
+	elseif state.sprintRequested then
+		return MOVE.SPRINT_SPEED
+	end
+	return MOVE.WALK_SPEED
+end
+
+local function applySpeed(state: PlayerState)
+	local humanoid = state.humanoid
+	if not humanoid then
+		return
+	end
+	local speed = allowedSpeed(state)
+	if humanoid.WalkSpeed ~= speed then
+		humanoid.WalkSpeed = speed
+	end
+	local sprinting = state.sprintRequested and not state.raised
+	if state.player:GetAttribute(ATTR.Sprinting) ~= sprinting then
+		state.player:SetAttribute(ATTR.Sprinting, sprinting)
+	end
+end
+
+local function setRaised(state: PlayerState, raised: boolean, reason: string)
+	if state.raised == raised then
+		return
+	end
+	state.raised = raised
+	if not raised then
+		state.loweredAt = os.clock()
+		state.lookDirection = nil
+	end
+	-- Speed changes take a moment to show up in replicated movement; don't flag that.
+	state.ignoreSpeedUntil = os.clock() + 0.6
+	state.player:SetAttribute(ATTR.CamcorderRaised, raised)
+	applySpeed(state)
+	pushBattery(state, true)
+	for _, callback in changedCallbacks do
+		task.spawn(callback, state.player, raised, reason)
+	end
+end
+
+-- Character lifecycle ------------------------------------------------------------------------
+
+local function disconnectCharacter(state: PlayerState)
+	for _, connection in state.characterConnections do
+		connection:Disconnect()
+	end
+	table.clear(state.characterConnections)
+	state.humanoid = nil
+	state.rootPart = nil
+	state.head = nil
+end
+
+local function onCharacterAdded(state: PlayerState, character: Model)
+	disconnectCharacter(state)
+	setRaised(state, false, "respawn")
+	state.sprintRequested = false
+	if CAM.RESET_BATTERY_ON_SPAWN then
+		state.battery = CAM.MAX_BATTERY
+	end
+
+	local humanoid = character:WaitForChild("Humanoid", 10)
+	local rootPart = character:WaitForChild("HumanoidRootPart", 10)
+	local head = character:WaitForChild("Head", 10)
+	if state.player.Character ~= character then
+		return -- respawned again while we waited
+	end
+	if not humanoid or not humanoid:IsA("Humanoid") then
+		warn(`[Shutter] {state.player.Name}'s character has no Humanoid`)
+		return
+	end
+	if not rootPart or not rootPart:IsA("BasePart") then
+		warn(`[Shutter] {state.player.Name}'s character has no HumanoidRootPart`)
+		return
+	end
+	state.humanoid = humanoid
+	state.rootPart = rootPart
+	state.head = if head and head:IsA("BasePart") then head else nil
+	state.lastSamplePosition = rootPart.Position
+	state.lastSampleAt = os.clock()
+	state.lastValidCFrame = rootPart.CFrame
+	state.strikes = 0
+	state.ignoreSpeedUntil = os.clock() + 2
+
+	table.insert(
+		state.characterConnections,
+		humanoid.Died:Connect(function()
+			setRaised(state, false, "died")
+			state.sprintRequested = false
+		end)
+	)
+	-- If anything else rewrites WalkSpeed on the server, put it back.
+	table.insert(
+		state.characterConnections,
+		humanoid:GetPropertyChangedSignal("WalkSpeed"):Connect(function()
+			applySpeed(state)
+		end)
+	)
+	applySpeed(state)
+	pushBattery(state, true)
+end
+
+local function onPlayerAdded(player: Player)
+	local now = os.clock()
+	local state: PlayerState = {
+		player = player,
+		battery = CAM.MAX_BATTERY,
+		raised = false,
+		sprintRequested = false,
+		loweredAt = now - CAM.RECHARGE_DELAY,
+		lastToggleAt = 0,
+		lookDirection = nil,
+		lookTime = 0,
+		lookTokens = CAM.LOOK_MAX_RATE,
+		sprintTokens = MOVE.SPRINT_REQUEST_RATE,
+		lastBatterySent = -1,
+		lastBatterySentAt = 0,
+		lastSamplePosition = nil,
+		lastSampleAt = now,
+		lastValidCFrame = nil,
+		strikes = 0,
+		ignoreSpeedUntil = 0,
+		previousAllowedSpeed = MOVE.WALK_SPEED,
+		humanoid = nil,
+		rootPart = nil,
+		head = nil,
+		characterConnections = {},
+	}
+	states[player] = state
+	player:SetAttribute(ATTR.CamcorderRaised, false)
+	player:SetAttribute(ATTR.Sprinting, false)
+	player:SetAttribute(ATTR.Clues, player:GetAttribute(ATTR.Clues) or 0)
+	pushBattery(state, true)
+
+	player.CharacterAdded:Connect(function(character: Model)
+		onCharacterAdded(state, character)
+	end)
+	if player.Character then
+		task.spawn(onCharacterAdded, state, player.Character)
+	end
+end
+
+local function onPlayerRemoving(player: Player)
+	local state = states[player]
+	if state then
+		disconnectCharacter(state)
+		states[player] = nil
+	end
+end
+
+-- Remote handlers (every argument is untrusted) ---------------------------------------------
+
+local function onToggleRequest(player: Player, wantRaised: unknown)
+	if typeof(wantRaised) ~= "boolean" then
+		return
+	end
+	local state = states[player]
+	if not state or state.raised == wantRaised then
+		return
+	end
+	local now = os.clock()
+	if now - state.lastToggleAt < CAM.TOGGLE_COOLDOWN then
+		return
+	end
+	if wantRaised then
+		if not isAlive(state) or state.battery < CAM.MIN_BATTERY_TO_RAISE then
+			return
+		end
+	end
+	state.lastToggleAt = now
+	setRaised(state, wantRaised, "request")
+end
+
+local function onSprintRequest(player: Player, wantSprint: unknown)
+	if typeof(wantSprint) ~= "boolean" then
+		return
+	end
+	local state = states[player]
+	if not state or state.sprintTokens < 1 then
+		return
+	end
+	state.sprintTokens -= 1
+	if not isAlive(state) then
+		wantSprint = false
+	end
+	if state.sprintRequested ~= wantSprint then
+		state.sprintRequested = wantSprint
+		state.ignoreSpeedUntil = os.clock() + 0.6
+		applySpeed(state)
+	end
+end
+
+local function onLookUpdate(player: Player, direction: unknown)
+	local state = states[player]
+	if not state or not state.raised then
+		return -- looks only matter while filming
+	end
+	if state.lookTokens < 1 then
+		return
+	end
+	state.lookTokens -= 1
+	if typeof(direction) ~= "Vector3" or not isFiniteVector(direction) then
+		return
+	end
+	local magnitude = direction.Magnitude
+	if magnitude < 0.9 or magnitude > 1.1 then
+		return
+	end
+	local unit = direction / magnitude
+	local rootPart = state.rootPart
+	if not rootPart then
+		return
+	end
+	-- While filming the camera is first person, so the body yaw follows the camera.
+	-- A look far from where the body faces is a forged packet (or extreme lag): drop it.
+	local flatLook = horizontal(unit)
+	local flatBody = horizontal(rootPart.CFrame.LookVector)
+	if flatLook.Magnitude > 0.2 and flatBody.Magnitude > 0.2 then
+		local dot = math.clamp(flatLook.Unit:Dot(flatBody.Unit), -1, 1)
+		if math.deg(math.acos(dot)) > CAM.LOOK_MAX_BODY_YAW then
+			return
+		end
+	end
+	state.lookDirection = unit
+	state.lookTime = os.clock()
+end
+
+-- Simulation -----------------------------------------------------------------------------------
+
+local function checkSpeed(state: PlayerState, now: number)
+	if not MOVE.ANTI_SPEED_ENABLED then
+		return
+	end
+	local rootPart = state.rootPart
+	local humanoid = state.humanoid
+	if not rootPart or not humanoid or humanoid.Health <= 0 then
+		return
+	end
+	local elapsed = now - state.lastSampleAt
+	if elapsed < MOVE.ANTI_SPEED_INTERVAL then
+		return
+	end
+	local position = rootPart.Position
+	local allowed = math.max(allowedSpeed(state), state.previousAllowedSpeed)
+	state.previousAllowedSpeed = allowedSpeed(state)
+
+	local last = state.lastSamplePosition
+	state.lastSamplePosition = position
+	state.lastSampleAt = now
+	if not last then
+		state.lastValidCFrame = rootPart.CFrame
+		return
+	end
+	if now < state.ignoreSpeedUntil or humanoid.SeatPart ~= nil then
+		state.lastValidCFrame = rootPart.CFrame
+		state.strikes = 0
+		return
+	end
+
+	local travelled = horizontal(position - last).Magnitude
+	local limit = allowed * elapsed * MOVE.ANTI_SPEED_TOLERANCE + MOVE.ANTI_SPEED_SLACK
+	if travelled > limit then
+		state.strikes += 1
+		if state.strikes >= MOVE.ANTI_SPEED_STRIKES then
+			local valid = state.lastValidCFrame
+			if valid then
+				local character = state.player.Character
+				if character then
+					character:PivotTo(valid)
+				end
+				state.lastSamplePosition = valid.Position
+			end
+			state.strikes = 0
+			state.ignoreSpeedUntil = now + 0.5
+		end
+	else
+		state.strikes = math.max(0, state.strikes - 1)
+		if state.strikes == 0 then
+			state.lastValidCFrame = rootPart.CFrame
+		end
+	end
+end
+
+local function step(dt: number)
+	local now = os.clock()
+	for _, state in states do
+		-- Refill rate-limit buckets.
+		state.lookTokens = math.min(CAM.LOOK_MAX_RATE, state.lookTokens + CAM.LOOK_MAX_RATE * dt)
+		state.sprintTokens = math.min(MOVE.SPRINT_REQUEST_RATE, state.sprintTokens + MOVE.SPRINT_REQUEST_RATE * dt)
+
+		if state.raised then
+			state.battery = math.max(0, state.battery - CAM.DRAIN_PER_SECOND * dt)
+			if state.battery <= 0 then
+				setRaised(state, false, "battery")
+			elseif not isAlive(state) then
+				setRaised(state, false, "died")
+			end
+		elseif now - state.loweredAt >= CAM.RECHARGE_DELAY and state.battery < CAM.MAX_BATTERY then
+			state.battery = math.min(CAM.MAX_BATTERY, state.battery + CAM.RECHARGE_PER_SECOND * dt)
+		end
+		pushBattery(state, false)
+		checkSpeed(state, now)
+	end
+end
+
+-- Public API -------------------------------------------------------------------------------------
+
+function CamcorderService.start()
+	if started then
+		return
+	end
+	started = true
+	Net.CamcorderToggle.OnServerEvent:Connect(onToggleRequest)
+	Net.SprintState.OnServerEvent:Connect(onSprintRequest)
+	Net.LookUpdate.OnServerEvent:Connect(onLookUpdate)
+	Players.PlayerAdded:Connect(onPlayerAdded)
+	Players.PlayerRemoving:Connect(onPlayerRemoving)
+	for _, player in Players:GetPlayers() do
+		task.spawn(onPlayerAdded, player)
+	end
+	RunService.Heartbeat:Connect(step)
+end
+
+function CamcorderService.getState(player: Player): PlayerState?
+	return states[player]
+end
+
+-- True while the camcorder is up, has charge, and the player is alive.
+function CamcorderService.isFilming(player: Player): boolean
+	local state = states[player]
+	return state ~= nil and state.raised and state.battery > 0 and isAlive(state)
+end
+
+-- Returns (eye position from the SERVER's head copy, fresh look direction) while filming.
+function CamcorderService.getLook(player: Player): (Vector3?, Vector3?)
+	local state = states[player]
+	if not state or not CamcorderService.isFilming(player) then
+		return nil, nil
+	end
+	local direction = state.lookDirection
+	if not direction or os.clock() - state.lookTime > CAM.LOOK_MAX_AGE then
+		return nil, nil
+	end
+	local head = state.head
+	local rootPart = state.rootPart
+	local origin: Vector3
+	if head and head.Parent then
+		origin = head.Position
+	elseif rootPart then
+		origin = rootPart.Position + Vector3.new(0, 1.5, 0)
+	else
+		return nil, nil
+	end
+	return origin, direction
+end
+
+function CamcorderService.getBattery(player: Player): number
+	local state = states[player]
+	return if state then state.battery else 0
+end
+
+function CamcorderService.addBattery(player: Player, amount: number)
+	local state = states[player]
+	if not state or amount ~= amount then
+		return
+	end
+	state.battery = math.clamp(state.battery + amount, 0, CAM.MAX_BATTERY)
+	if state.battery <= 0 then
+		setRaised(state, false, "battery")
+	end
+	pushBattery(state, true)
+end
+
+function CamcorderService.forceLower(player: Player, reason: string?)
+	local state = states[player]
+	if state then
+		setRaised(state, false, reason or "forced")
+	end
+end
+
+-- Call before the server teleports a character, so the speed check doesn't rubber-band it.
+function CamcorderService.allowTeleport(player: Player, seconds: number?)
+	local state = states[player]
+	if state then
+		state.ignoreSpeedUntil = os.clock() + (seconds or 1)
+		state.lastSamplePosition = nil
+	end
+end
+
+-- Subscribe to raise/lower. Returns a function that unsubscribes.
+function CamcorderService.onCamcorderChanged(callback: ChangedCallback): () -> ()
+	table.insert(changedCallbacks, callback)
+	return function()
+		local index = table.find(changedCallbacks, callback)
+		if index then
+			table.remove(changedCallbacks, index)
+		end
+	end
+end
+
+return CamcorderService
+]]></ProtectedString>
+				</Properties>
+			</Item>
+			<Item class="ModuleScript" referent="RBX0000000E">
+				<Properties>
+					<string name="Name">DemoLevel</string>
+					<ProtectedString name="Source"><![CDATA[--!strict
+-- DemoLevel (server): a small test map that exercises every SHUTTER feature.
+-- It is built ONLY when Config.DEMO_LEVEL is true AND the place contains no CameraOnly
+-- objects yet, so it gets out of the way as soon as you build your own level.
+--
+-- Layout (floor at Y = 0, spawn at Z = +60 facing -Z):
+--   * A dividing wall at Z = 30 with an open doorway (left) and a HIDDEN DOOR (right).
+--     Naked eye: the hidden door is plain wall (NakedEyeOnly). Camcorder: a red door appears
+--     (CameraOnly) with an "Open" prompt; using it opens the passage for everyone.
+--   * Behind the hidden door: a closet with a Clue and a Battery pickup (CameraOnly).
+--   * A message on the wall and footprints on the floor that only the camcorder sees.
+--   * A WatcherSpawn marker at Z = -80: the Watcher starts there and comes for you.
+
+local CollectionService = game:GetService("CollectionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Config = require(ReplicatedStorage:WaitForChild("Shutter"):WaitForChild("Config"))
+
+local TAGS = Config.Tags
+
+local DemoLevel = {}
+
+local WALL_COLOR = Color3.fromRGB(205, 192, 122)
+local FLOOR_COLOR = Color3.fromRGB(150, 132, 84)
+local DOOR_COLOR = Color3.fromRGB(110, 26, 22)
+local WALL_HEIGHT = 12
+local WALL_THICKNESS = 2
+
+local function part(parent: Instance, name: string, size: Vector3, position: Vector3, color: Color3, material: Enum.Material?): Part
+	local p = Instance.new("Part")
+	p.Name = name
+	p.Anchored = true
+	p.Size = size
+	p.Position = position
+	p.Color = color
+	p.Material = material or Enum.Material.SmoothPlastic
+	p.TopSurface = Enum.SurfaceType.Smooth
+	p.BottomSurface = Enum.SurfaceType.Smooth
+	p.Parent = parent
+	return p
+end
+
+-- Wall along X between x0 and x1, centred on z.
+local function wallX(parent: Instance, name: string, x0: number, x1: number, z: number)
+	part(parent, name, Vector3.new(x1 - x0, WALL_HEIGHT, WALL_THICKNESS), Vector3.new((x0 + x1) / 2, WALL_HEIGHT / 2, z), WALL_COLOR)
+end
+
+-- Wall along Z between z0 and z1, centred on x.
+local function wallZ(parent: Instance, name: string, z0: number, z1: number, x: number)
+	part(parent, name, Vector3.new(WALL_THICKNESS, WALL_HEIGHT, z1 - z0), Vector3.new(x, WALL_HEIGHT / 2, (z0 + z1) / 2), WALL_COLOR)
+end
+
+local function prompt(parent: Instance, action: string, objectText: string)
+	local p = Instance.new("ProximityPrompt")
+	p.ActionText = action
+	p.ObjectText = objectText
+	p.MaxActivationDistance = 9
+	p.HoldDuration = 0.4
+	p.RequiresLineOfSight = false -- the server does its own line-of-sight check
+	p.Parent = parent
+end
+
+local function pickup(parent: Instance, name: string, kind: string, position: Vector3, color: Color3)
+	local item = part(parent, name, Vector3.new(1.2, 1.2, 1.2), position, color, Enum.Material.Neon)
+	item.CanCollide = false
+	item:SetAttribute("PickupKind", kind)
+	if kind == "Battery" then
+		item:SetAttribute("Amount", 40)
+	end
+	prompt(item, "Take", kind)
+	CollectionService:AddTag(item, TAGS.CameraOnly)
+	CollectionService:AddTag(item, TAGS.Pickup)
+end
+
+function DemoLevel.buildIfEmpty(): boolean
+	if not Config.DEMO_LEVEL then
+		return false
+	end
+	for _, tagged in CollectionService:GetTagged(TAGS.CameraOnly) do
+		if tagged:IsDescendantOf(workspace) then
+			return false -- the place already has its own SHUTTER content
+		end
+	end
+
+	local root = Instance.new("Folder")
+	root.Name = "ShutterDemoLevel"
+
+	-- Floor and outer walls
+	part(root, "Floor", Vector3.new(204, 1, 204), Vector3.new(0, -0.45, 0), FLOOR_COLOR, Enum.Material.Fabric)
+	wallX(root, "NorthWall", -102, 102, -101)
+	wallX(root, "SouthWall", -102, 102, 101)
+	wallZ(root, "WestWall", -100, 100, -101)
+	wallZ(root, "EastWall", -100, 100, 101)
+
+	-- Dividing wall at Z = 30: open doorway at x -34..-26, hidden door at x 16..24
+	wallX(root, "DividerWest", -100, -34, 30)
+	wallX(root, "DividerMid", -26, 16, 30)
+	wallX(root, "DividerEast", 24, 100, 30)
+	part(root, "DoorwayLintel", Vector3.new(8, 3, WALL_THICKNESS), Vector3.new(-30, WALL_HEIGHT - 1.5, 30), WALL_COLOR)
+
+	-- A few pillars to break line of sight on the Watcher's side
+	for i, x in { -60, -15, 40, 75 } do
+		part(root, "Pillar" .. i, Vector3.new(4, WALL_HEIGHT, 4), Vector3.new(x, WALL_HEIGHT / 2, -30 + (i % 2) * 25), WALL_COLOR)
+	end
+
+	-- Closet behind the hidden door (on the far side of the divider)
+	wallZ(root, "ClosetWest", 14, 29, 14)
+	wallZ(root, "ClosetEast", 14, 29, 26)
+	wallX(root, "ClosetBack", 13, 27, 13)
+
+	-- The hidden door: one model, two realities.
+	local door = Instance.new("Model")
+	door.Name = "HiddenDoor"
+	local disguise = part(door, "Disguise", Vector3.new(8, WALL_HEIGHT, WALL_THICKNESS), Vector3.new(20, WALL_HEIGHT / 2, 30), WALL_COLOR)
+	CollectionService:AddTag(disguise, TAGS.NakedEyeOnly) -- the wall you think is there
+	local panel = part(door, "Door", Vector3.new(6, 9, 0.6), Vector3.new(20, 4.5, 31.2), DOOR_COLOR, Enum.Material.Wood)
+	panel.CanCollide = false
+	CollectionService:AddTag(panel, TAGS.CameraOnly) -- the door that is really there
+	prompt(panel, "Open", "Door")
+	door.Parent = root
+	CollectionService:AddTag(door, TAGS.Door)
+
+	pickup(root, "Clue", "Clue", Vector3.new(17.5, 1.5, 19), Color3.fromRGB(240, 230, 200))
+	pickup(root, "Battery", "Battery", Vector3.new(22.5, 1.5, 19), Color3.fromRGB(120, 230, 120))
+
+	-- Camcorder-only message on the divider (spawn side)
+	local board = part(root, "Message", Vector3.new(24, 5, 0.2), Vector3.new(-62, 6.5, 31.2), Color3.new(0, 0, 0))
+	board.Transparency = 1
+	board.CanCollide = false
+	board.CanQuery = false
+	local surface = Instance.new("SurfaceGui")
+	surface.Face = Enum.NormalId.Back -- faces +Z, toward the spawn
+	surface.LightInfluence = 0
+	surface.Parent = board
+	local text = Instance.new("TextLabel")
+	text.BackgroundTransparency = 1
+	text.Size = UDim2.fromScale(1, 1)
+	text.Font = Enum.Font.Creepster
+	text.Text = "IT ONLY MOVES WHEN YOU LOOK AWAY"
+	text.TextColor3 = Color3.fromRGB(170, 10, 10)
+	text.TextScaled = true
+	text.Parent = surface
+	CollectionService:AddTag(board, TAGS.CameraOnly)
+
+	-- Camcorder-only footprints leading to the hidden door
+	for i = 0, 7 do
+		local side = if i % 2 == 0 then -0.6 else 0.6
+		local print_ = part(root, "Footprint", Vector3.new(0.8, 0.05, 1.4), Vector3.new(20 + side, 0.08, 52 - i * 2.6), Color3.fromRGB(90, 10, 10))
+		print_.CanCollide = false
+		print_.CanQuery = false
+		CollectionService:AddTag(print_, TAGS.CameraOnly)
+	end
+
+	-- Spawn and the Watcher's start
+	local spawn = Instance.new("SpawnLocation")
+	spawn.Name = "ShutterSpawn"
+	spawn.Anchored = true
+	spawn.Size = Vector3.new(6, 1, 6)
+	spawn.Position = Vector3.new(0, 0.5, 60)
+	spawn.Duration = 0
+	spawn.Color = FLOOR_COLOR
+	spawn.Material = Enum.Material.Fabric
+	spawn.TopSurface = Enum.SurfaceType.Smooth
+	spawn.Parent = root
+
+	local watcherSpawn = part(root, "WatcherSpawn", Vector3.new(2, 1, 2), Vector3.new(0, 1, -80), Color3.new(0, 0, 0))
+	watcherSpawn.Transparency = 1
+	watcherSpawn.CanCollide = false
+	watcherSpawn.CanQuery = false
+	CollectionService:AddTag(watcherSpawn, TAGS.WatcherSpawn)
+
+	root.Parent = workspace
+	print("[Shutter] Demo level built (set Config.DEMO_LEVEL = false to disable)")
+	return true
+end
+
+return DemoLevel
+]]></ProtectedString>
+				</Properties>
+			</Item>
+			<Item class="ModuleScript" referent="RBX0000000F">
+				<Properties>
+					<string name="Name">InteractionService</string>
+					<ProtectedString name="Source"><![CDATA[--!strict
+-- InteractionService (server): ProximityPrompts that live inside CameraOnly objects.
+--
+-- Clients only SEE these prompts while filming (RealityRenderer hides them otherwise), but a
+-- hidden prompt can still be fired by an exploiter. So every trigger is re-checked here:
+--   1. the player is filming (server camcorder state, battery > 0)
+--   2. head-to-object distance <= prompt.MaxActivationDistance + slack
+--   3. the player's view points roughly at the object (server-stamped look direction)
+--   4. nothing solid is between the head and the object (server raycast)
+--
+-- Built-in behaviours:
+--   ShutterDoor   (Model/Part) - every BasePart inside stops colliding and fades out.
+--   ShutterPickup (Model/Part) - Attribute PickupKind = "Clue" | "Battery" (+ optional Amount).
+-- Other systems can subscribe with InteractionService.onInteracted(callback).
+
+local CollectionService = game:GetService("CollectionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+
+local Shared = ReplicatedStorage:WaitForChild("Shutter")
+local Config = require(Shared:WaitForChild("Config"))
+local CamcorderService = require(script.Parent:WaitForChild("CamcorderService"))
+
+local TAGS = Config.Tags
+local INTERACT = Config.Interaction
+local ATTR = Config.Attributes
+
+type InteractedCallback = (player: Player, target: Instance, prompt: ProximityPrompt) -> ()
+
+local InteractionService = {}
+
+local callbacks: { InteractedCallback } = {}
+local hookedPrompts: { [ProximityPrompt]: RBXScriptConnection } = {}
+local lastUse: { [Player]: { [ProximityPrompt]: number } } = {}
+local started = false
+
+local function findTaggedAncestor(instance: Instance, tag: string): Instance?
+	local current: Instance? = instance
+	while current and current ~= workspace do
+		if CollectionService:HasTag(current, tag) then
+			return current
+		end
+		current = current.Parent
+	end
+	return nil
+end
+
+local function worldPosition(instance: Instance): Vector3?
+	if instance:IsA("BasePart") then
+		return instance.Position
+	elseif instance:IsA("Attachment") then
+		return instance.WorldPosition
+	elseif instance:IsA("Model") then
+		return instance:GetPivot().Position
+	end
+	local parent = instance.Parent
+	return if parent then worldPosition(parent) else nil
+end
+
+local function hasLineOfSight(player: Player, origin: Vector3, target: Vector3, targetObject: Instance): boolean
+	local exclude: { Instance } = { targetObject }
+	if player.Character then
+		table.insert(exclude, player.Character)
+	end
+	-- NakedEyeOnly parts are hidden while filming, so they must not block the camcorder.
+	for _, hidden in CollectionService:GetTagged(TAGS.NakedEyeOnly) do
+		table.insert(exclude, hidden)
+	end
+	for _, entity in CollectionService:GetTagged(TAGS.Entity) do
+		table.insert(exclude, entity)
+	end
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = exclude
+	params.IgnoreWater = true
+
+	local direction = target - origin
+	local result = workspace:Raycast(origin, direction, params)
+	-- Allow a hit right at the target (prompt parented to a part embedded in a wall).
+	return result == nil or (result.Position - target).Magnitude < 1.5
+end
+
+local function validate(player: Player, prompt: ProximityPrompt, cameraObject: Instance): boolean
+	if not CamcorderService.isFilming(player) then
+		return false
+	end
+	local origin, look = CamcorderService.getLook(player)
+	if not origin or not look then
+		return false
+	end
+	local target = worldPosition(prompt.Parent or cameraObject)
+	if not target then
+		return false
+	end
+	local offset = target - origin
+	local distance = offset.Magnitude
+	if distance > prompt.MaxActivationDistance + INTERACT.EXTRA_DISTANCE then
+		return false
+	end
+	if distance > 0.5 then
+		local angle = math.deg(math.acos(math.clamp(look:Dot(offset.Unit), -1, 1)))
+		if angle > INTERACT.MAX_LOOK_ANGLE then
+			return false
+		end
+	end
+	return hasLineOfSight(player, origin, target, cameraObject)
+end
+
+local function openDoor(door: Instance)
+	if door:GetAttribute("Opened") == true then
+		return
+	end
+	door:SetAttribute("Opened", true)
+	local parts: { BasePart } = {}
+	if door:IsA("BasePart") then
+		table.insert(parts, door)
+	end
+	for _, descendant in door:GetDescendants() do
+		if descendant:IsA("BasePart") then
+			table.insert(parts, descendant)
+		elseif descendant:IsA("ProximityPrompt") then
+			descendant:Destroy() -- a used door can't be used again
+		end
+	end
+	local info = TweenInfo.new(INTERACT.DOOR_FADE_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+	for _, part in parts do
+		part.CanCollide = false
+		part.CanQuery = false
+		TweenService:Create(part, info, { Transparency = 1 }):Play()
+	end
+end
+
+local function collectPickup(player: Player, pickup: Instance)
+	if pickup:GetAttribute("Collected") == true then
+		return
+	end
+	pickup:SetAttribute("Collected", true)
+	local kind = pickup:GetAttribute("PickupKind")
+	local amount = pickup:GetAttribute("Amount")
+	if kind == "Battery" then
+		local charge = if typeof(amount) == "number" then amount else INTERACT.DEFAULT_BATTERY_PICKUP
+		CamcorderService.addBattery(player, charge)
+	else
+		local clues = player:GetAttribute(ATTR.Clues)
+		local count = if typeof(clues) == "number" then clues else 0
+		local gain = if typeof(amount) == "number" then math.floor(amount) else 1
+		player:SetAttribute(ATTR.Clues, count + gain)
+	end
+	pickup:Destroy()
+end
+
+local function onTriggered(prompt: ProximityPrompt, player: Player)
+	local cameraObject = findTaggedAncestor(prompt, TAGS.CameraOnly)
+	if not cameraObject then
+		return -- tag was removed since we hooked it
+	end
+	local now = os.clock()
+	local perPlayer = lastUse[player]
+	if not perPlayer then
+		perPlayer = {}
+		lastUse[player] = perPlayer
+	end
+	local last = perPlayer[prompt]
+	if last and now - last < INTERACT.DEBOUNCE then
+		return
+	end
+	perPlayer[prompt] = now
+
+	if not validate(player, prompt, cameraObject) then
+		return
+	end
+
+	local door = findTaggedAncestor(prompt, TAGS.Door)
+	if door then
+		openDoor(door)
+	end
+	local pickup = findTaggedAncestor(prompt, TAGS.Pickup)
+	if pickup then
+		collectPickup(player, pickup)
+	end
+	local target = door or pickup or cameraObject
+	for _, callback in callbacks do
+		task.spawn(callback, player, target, prompt)
+	end
+end
+
+local function hookPrompt(prompt: ProximityPrompt)
+	if hookedPrompts[prompt] then
+		return
+	end
+	hookedPrompts[prompt] = prompt.Triggered:Connect(function(player: Player)
+		onTriggered(prompt, player)
+	end)
+	prompt.Destroying:Connect(function()
+		local connection = hookedPrompts[prompt]
+		if connection then
+			connection:Disconnect()
+			hookedPrompts[prompt] = nil
+		end
+	end)
+end
+
+local function onCameraOnlyAdded(instance: Instance)
+	if instance:IsA("ProximityPrompt") then
+		hookPrompt(instance)
+	end
+	for _, descendant in instance:GetDescendants() do
+		if descendant:IsA("ProximityPrompt") then
+			hookPrompt(descendant)
+		end
+	end
+	instance.DescendantAdded:Connect(function(descendant: Instance)
+		if descendant:IsA("ProximityPrompt") then
+			hookPrompt(descendant)
+		end
+	end)
+end
+
+function InteractionService.start()
+	if started then
+		return
+	end
+	started = true
+	CollectionService:GetInstanceAddedSignal(TAGS.CameraOnly):Connect(onCameraOnlyAdded)
+	for _, instance in CollectionService:GetTagged(TAGS.CameraOnly) do
+		onCameraOnlyAdded(instance)
+	end
+	game:GetService("Players").PlayerRemoving:Connect(function(player: Player)
+		lastUse[player] = nil
+	end)
+end
+
+function InteractionService.onInteracted(callback: InteractedCallback): () -> ()
+	table.insert(callbacks, callback)
+	return function()
+		local index = table.find(callbacks, callback)
+		if index then
+			table.remove(callbacks, index)
+		end
+	end
+end
+
+return InteractionService
+]]></ProtectedString>
+				</Properties>
+			</Item>
+			<Item class="Script" referent="RBX00000010">
+				<Properties>
+					<string name="Name">Main</string>
+					<ProtectedString name="Source"><![CDATA[--!strict
+-- THE SHUTTER server bootstrap. The only Script on the server; everything else is a module.
+-- Start order matters: remotes -> demo map -> camcorder/battery core -> interactions -> the Watcher.
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Shared = ReplicatedStorage:WaitForChild("Shutter")
+require(Shared:WaitForChild("Net")) -- creates any missing remotes before clients look for them
+
+local CamcorderService = require(script.Parent:WaitForChild("CamcorderService"))
+local InteractionService = require(script.Parent:WaitForChild("InteractionService"))
+local WatcherService = require(script.Parent:WaitForChild("WatcherService"))
+local DemoLevel = require(script.Parent:WaitForChild("DemoLevel"))
+
+DemoLevel.buildIfEmpty() -- before the Watcher, so its WatcherSpawn marker exists
+CamcorderService.start()
+InteractionService.start()
+WatcherService.start()
+
+print("[Shutter] Server systems online: Camcorder/Battery, Interaction, Watcher")
+]]></ProtectedString>
+				</Properties>
+			</Item>
+			<Item class="ModuleScript" referent="RBX00000011">
+				<Properties>
+					<string name="Name">WatcherRig</string>
+					<ProtectedString name="Source"><![CDATA[--!strict
+-- Builds the default WATCHER: a tall, gaunt silhouette with a pale, featureless head and two
+-- pin-prick eyes. Used when the place has no model tagged ShutterEntity. Swap in your own
+-- model any time: tag it ShutterEntity, give it a PrimaryPart, and WatcherService drives it.
+--
+-- Every part is Anchored / CanCollide=false: the server moves the whole model with PivotTo,
+-- so there is no physics owner to exploit and "frozen" means exactly frozen.
+
+local CollectionService = game:GetService("CollectionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Config = require(ReplicatedStorage:WaitForChild("Shutter"):WaitForChild("Config"))
+
+local WatcherRig = {}
+
+local BODY_COLOR = Color3.fromRGB(14, 14, 17)
+local SKIN_COLOR = Color3.fromRGB(214, 208, 196)
+local EYE_COLOR = Color3.fromRGB(255, 250, 240)
+
+WatcherRig.HEIGHT = 9 -- studs, feet to crown
+WatcherRig.HIP_HEIGHT = 4.5 -- pivot (Root centre) above the feet
+
+local function makePart(model: Model, name: string, size: Vector3, offset: CFrame, color: Color3, material: Enum.Material): BasePart
+	local part = Instance.new("Part")
+	part.Name = name
+	part.Size = size
+	part.CFrame = offset
+	part.Color = color
+	part.Material = material
+	part.Anchored = true
+	part.CanCollide = false
+	part.CanTouch = false
+	part.CanQuery = true
+	part.CastShadow = false
+	part.TopSurface = Enum.SurfaceType.Smooth
+	part.BottomSurface = Enum.SurfaceType.Smooth
+	part.Parent = model
+	return part
+end
+
+-- Builds the rig with its feet at `feetPosition`, facing `facing` (defaults to -Z).
+function WatcherRig.build(feetPosition: Vector3, facing: Vector3?): Model
+	local model = Instance.new("Model")
+	model.Name = "TheWatcher"
+
+	local look = facing or Vector3.new(0, 0, -1)
+	local flat = Vector3.new(look.X, 0, look.Z)
+	if flat.Magnitude < 1e-3 then
+		flat = Vector3.new(0, 0, -1)
+	end
+	local origin = feetPosition + Vector3.new(0, WatcherRig.HIP_HEIGHT, 0)
+	local rootCFrame = CFrame.lookAt(origin, origin + flat.Unit)
+	local function at(x: number, y: number, z: number): CFrame
+		return rootCFrame * CFrame.new(x, y, z)
+	end
+
+	local root = makePart(model, "Root", Vector3.new(2, WatcherRig.HEIGHT, 1.2), rootCFrame, BODY_COLOR, Enum.Material.SmoothPlastic)
+	root.Transparency = 1
+
+	-- Legs: ground (-4.5) to hips (-0.3)
+	makePart(model, "LeftLeg", Vector3.new(0.45, 4.2, 0.45), at(-0.45, -2.4, 0), BODY_COLOR, Enum.Material.SmoothPlastic)
+	makePart(model, "RightLeg", Vector3.new(0.45, 4.2, 0.45), at(0.45, -2.4, 0), BODY_COLOR, Enum.Material.SmoothPlastic)
+	-- Torso: hips to shoulders (2.5)
+	makePart(model, "Torso", Vector3.new(1.5, 2.8, 0.6), at(0, 1.1, 0), BODY_COLOR, Enum.Material.SmoothPlastic)
+	-- Arms hang far too low, slightly splayed.
+	makePart(model, "LeftArm", Vector3.new(0.32, 4.8, 0.32), at(-1.05, 0.05, 0) * CFrame.Angles(0, 0, math.rad(-4)), BODY_COLOR, Enum.Material.SmoothPlastic)
+	makePart(model, "RightArm", Vector3.new(0.32, 4.8, 0.32), at(1.05, 0.05, 0) * CFrame.Angles(0, 0, math.rad(4)), BODY_COLOR, Enum.Material.SmoothPlastic)
+	makePart(model, "Neck", Vector3.new(0.3, 0.7, 0.3), at(0, 2.8, 0), BODY_COLOR, Enum.Material.SmoothPlastic)
+	-- Head tilted a few degrees, as if listening.
+	local head = makePart(model, "Head", Vector3.new(1.1, 1.5, 1.1), at(0, 3.7, 0) * CFrame.Angles(0, 0, math.rad(9)), SKIN_COLOR, Enum.Material.SmoothPlastic)
+	local headMesh = Instance.new("SpecialMesh")
+	headMesh.MeshType = Enum.MeshType.Sphere
+	headMesh.Parent = head
+	makePart(model, "LeftEye", Vector3.new(0.16, 0.1, 0.05), head.CFrame * CFrame.new(-0.22, 0.1, -0.53), EYE_COLOR, Enum.Material.Neon)
+	makePart(model, "RightEye", Vector3.new(0.16, 0.1, 0.05), head.CFrame * CFrame.new(0.22, 0.1, -0.53), EYE_COLOR, Enum.Material.Neon)
+
+	model.PrimaryPart = root
+	CollectionService:AddTag(model, Config.Tags.CameraOnly)
+	CollectionService:AddTag(model, Config.Tags.Entity)
+	return model
+end
+
+return WatcherRig
+]]></ProtectedString>
+				</Properties>
+			</Item>
+			<Item class="ModuleScript" referent="RBX00000012">
+				<Properties>
+					<string name="Name">WatcherService</string>
+					<ProtectedString name="Source"><![CDATA[--!strict
+-- WatcherService (server): THE WATCHER's AI. "Look to survive, look away to escape."
+--
+-- Every think tick (THINK_RATE Hz) each Watcher asks: is ANY player filming me right now?
+-- That answer is computed here, never sent by a client:
+--   * CamcorderService.isFilming(player)    - server camcorder state + battery
+--   * CamcorderService.getLook(player)      - server head position + fresh, validated look dir
+--   * the Watcher is inside the camcorder's view cone and within VIEW_RANGE
+--   * a server raycast from the head reaches the Watcher (walls block the view)
+-- If yes: it FREEZES on the spot. If no: it stalks (far) or hunts (near) the closest player,
+-- using PathfindingService, and catches anyone it reaches.
+--
+-- The model is anchored and moved with PivotTo on Heartbeat, so the server owns its
+-- position completely. Clients only render it (RealityRenderer shows it while filming).
+
+local CollectionService = game:GetService("CollectionService")
+local PathfindingService = game:GetService("PathfindingService")
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+
+local Shared = ReplicatedStorage:WaitForChild("Shutter")
+local Config = require(Shared:WaitForChild("Config"))
+local Net = require(Shared:WaitForChild("Net"))
+local CamcorderService = require(script.Parent:WaitForChild("CamcorderService"))
+local WatcherRig = require(script.Parent:WaitForChild("WatcherRig"))
+
+local W = Config.Watcher
+local TAGS = Config.Tags
+local ATTR = Config.Attributes
+
+local UP = Vector3.new(0, 1, 0)
+local VIEW_COS = math.cos(math.rad(W.VIEW_HALF_ANGLE))
+local DIRECT_CHASE_DISTANCE = 14 -- with a clear line, walk straight at the target inside this
+
+export type WatcherState = "Idle" | "Stalking" | "Hunting" | "Frozen" | "Cooldown"
+
+type Watcher = {
+	model: Model,
+	hipHeight: number,
+	height: number,
+	state: WatcherState,
+	target: Player?,
+	path: Path,
+	waypoints: { Vector3 },
+	waypointIndex: number,
+	computingPath: boolean,
+	pathFailed: boolean,
+	lastPathAt: number,
+	lastPathGoal: Vector3?,
+	directGoal: Vector3?,
+	directAllowed: boolean,
+	moveSpeed: number,
+	frozenUntil: number,
+	cooldownUntil: number,
+	lastRelocateAt: number,
+	observers: { Player },
+	connections: { RBXScriptConnection },
+}
+
+type ObservedCallback = (watcherModel: Model, observers: { Player }) -> ()
+
+local WatcherService = {}
+
+local watchers: { [Model]: Watcher } = {}
+local observedCallbacks: { ObservedCallback } = {}
+local rng = Random.new()
+local started = false
+
+-- Raycast filters -----------------------------------------------------------------------------
+
+-- View rays ignore characters, Watchers, and NakedEyeOnly parts (hidden while filming).
+local viewParams = RaycastParams.new()
+viewParams.FilterType = Enum.RaycastFilterType.Exclude
+viewParams.IgnoreWater = true
+
+-- Ground / clearance checks only care about solid geometry.
+local groundParams = RaycastParams.new()
+groundParams.FilterType = Enum.RaycastFilterType.Exclude
+groundParams.IgnoreWater = true
+groundParams.RespectCanCollide = true
+
+local overlapParams = OverlapParams.new()
+overlapParams.FilterType = Enum.RaycastFilterType.Exclude
+overlapParams.RespectCanCollide = true
+
+local lastFilterRefresh = -math.huge
+
+local function refreshFilters(now: number)
+	if now - lastFilterRefresh < 0.5 then
+		return
+	end
+	lastFilterRefresh = now
+	local dynamic: { Instance } = {}
+	for _, player in Players:GetPlayers() do
+		if player.Character then
+			table.insert(dynamic, player.Character)
+		end
+	end
+	for model in watchers do
+		table.insert(dynamic, model)
+	end
+	groundParams.FilterDescendantsInstances = dynamic
+	overlapParams.FilterDescendantsInstances = dynamic
+
+	local view = table.clone(dynamic)
+	for _, hidden in CollectionService:GetTagged(TAGS.NakedEyeOnly) do
+		table.insert(view, hidden)
+	end
+	viewParams.FilterDescendantsInstances = view
+end
+
+-- Helpers ---------------------------------------------------------------------------------------
+
+local function flat(v: Vector3): Vector3
+	return Vector3.new(v.X, 0, v.Z)
+end
+
+-- True if nothing opaque lies between a and b. Near-invisible parts (glass, invisible walls)
+-- are stepped through, up to a few times.
+local function clearLine(a: Vector3, b: Vector3): boolean
+	local from = a
+	for _ = 1, 4 do
+		local direction = b - from
+		if direction.Magnitude < 0.05 then
+			return true
+		end
+		local hit = workspace:Raycast(from, direction, viewParams)
+		if not hit then
+			return true
+		end
+		local instance = hit.Instance
+		if instance:IsA("BasePart") and instance.Transparency >= 0.9 then
+			from = hit.Position + direction.Unit * 0.05
+		else
+			return false
+		end
+	end
+	return false
+end
+
+local function groundBelow(position: Vector3, depth: number): Vector3?
+	local hit = workspace:Raycast(position, Vector3.new(0, -depth, 0), groundParams)
+	return if hit then hit.Position else nil
+end
+
+local function feetOf(watcher: Watcher): Vector3
+	return watcher.model:GetPivot().Position - UP * watcher.hipHeight
+end
+
+local function viewPointsAt(watcher: Watcher, feet: Vector3): { Vector3 }
+	return {
+		feet + UP * (watcher.height * 0.88), -- head
+		feet + UP * (watcher.height * 0.55), -- chest
+		feet + UP * (watcher.height * 0.2), -- legs (visible over low cover)
+	}
+end
+
+-- Which players are filming any of `points` right now (server-side computation)?
+local function observersOf(points: { Vector3 }): { Player }
+	local result: { Player } = {}
+	for _, player in Players:GetPlayers() do
+		local origin, look = CamcorderService.getLook(player)
+		if origin and look then
+			for _, point in points do
+				local offset = point - origin
+				local distance = offset.Magnitude
+				if distance > 0.05 and distance <= W.VIEW_RANGE and look:Dot(offset / distance) >= VIEW_COS then
+					if clearLine(origin, point) then
+						table.insert(result, player)
+						break
+					end
+				end
+			end
+		end
+	end
+	return result
+end
+
+local function setState(watcher: Watcher, state: WatcherState)
+	if watcher.state == state then
+		return
+	end
+	watcher.state = state
+	watcher.model:SetAttribute(ATTR.WatcherState, state)
+	watcher.model:SetAttribute(ATTR.WatcherFrozen, state == "Frozen")
+end
+
+local function clearPath(watcher: Watcher)
+	table.clear(watcher.waypoints)
+	watcher.waypointIndex = 1
+	watcher.lastPathGoal = nil
+	watcher.directGoal = nil
+	watcher.directAllowed = false
+end
+
+local function standingCFrame(watcher: Watcher, feet: Vector3, facing: Vector3): CFrame
+	local pivot = feet + UP * watcher.hipHeight
+	local look = flat(facing)
+	if look.Magnitude < 1e-3 then
+		look = flat(watcher.model:GetPivot().LookVector)
+		if look.Magnitude < 1e-3 then
+			look = Vector3.new(0, 0, -1)
+		end
+	end
+	return CFrame.lookAt(pivot, pivot + look.Unit)
+end
+
+local function hasClearance(watcher: Watcher, feet: Vector3): boolean
+	local size = Vector3.new(W.AGENT_RADIUS * 1.5, watcher.height - 1, W.AGENT_RADIUS * 1.5)
+	local centre = CFrame.new(feet + UP * (watcher.height / 2 + 0.5))
+	return #workspace:GetPartBoundsInBox(centre, size, overlapParams) == 0
+end
+
+-- Alive player root parts ------------------------------------------------------------------------
+
+local function aliveRoot(player: Player): (BasePart?, Humanoid?)
+	local character = player.Character
+	if not character then
+		return nil, nil
+	end
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	local root = character:FindFirstChild("HumanoidRootPart")
+	if humanoid and humanoid.Health > 0 and root and root:IsA("BasePart") then
+		return root, humanoid
+	end
+	return nil, nil
+end
+
+local function pickTarget(watcher: Watcher, feet: Vector3): (Player?, BasePart?, Humanoid?, number)
+	local bestPlayer: Player? = nil
+	local bestRoot: BasePart? = nil
+	local bestHumanoid: Humanoid? = nil
+	local bestDistance = W.DETECT_RANGE
+	for _, player in Players:GetPlayers() do
+		local root, humanoid = aliveRoot(player)
+		if root and humanoid then
+			local distance = (root.Position - feet).Magnitude
+			-- Hysteresis: stick with the current target unless someone is clearly closer.
+			if player == watcher.target then
+				distance *= 0.8
+			end
+			if distance < bestDistance then
+				bestPlayer, bestRoot, bestHumanoid, bestDistance = player, root, humanoid, distance
+			end
+		end
+	end
+	return bestPlayer, bestRoot, bestHumanoid, bestDistance
+end
+
+-- Pathfinding -----------------------------------------------------------------------------------
+
+local function requestPath(watcher: Watcher, goal: Vector3, now: number)
+	if watcher.computingPath then
+		return
+	end
+	watcher.computingPath = true
+	watcher.lastPathAt = now
+	watcher.lastPathGoal = goal
+	local start = feetOf(watcher) + UP
+	task.spawn(function()
+		local ok = pcall(function()
+			watcher.path:ComputeAsync(start, goal)
+		end)
+		watcher.computingPath = false
+		if not watcher.model.Parent then
+			return
+		end
+		if ok and watcher.path.Status == Enum.PathStatus.Success then
+			local points: { Vector3 } = {}
+			for _, waypoint in watcher.path:GetWaypoints() do
+				table.insert(points, waypoint.Position)
+			end
+			watcher.waypoints = points
+			watcher.waypointIndex = 2 -- the first waypoint is where we already stand
+			watcher.pathFailed = false
+		else
+			table.clear(watcher.waypoints)
+			watcher.waypointIndex = 1
+			watcher.pathFailed = true
+		end
+	end)
+end
+
+-- Relocation & respawn --------------------------------------------------------------------------
+
+local function spawnPoints(): { Vector3 }
+	local points: { Vector3 } = {}
+	for _, marker in CollectionService:GetTagged(TAGS.WatcherSpawn) do
+		if marker:IsA("BasePart") then
+			table.insert(points, marker.Position)
+		elseif marker:IsA("Model") then
+			table.insert(points, marker:GetPivot().Position)
+		end
+	end
+	if #points == 0 then
+		local spawnLocation = workspace:FindFirstChildWhichIsA("SpawnLocation", true)
+		local base = if spawnLocation then spawnLocation.Position else Vector3.new(0, 4, 0)
+		table.insert(points, base + W.FALLBACK_SPAWN_OFFSET)
+	end
+	return points
+end
+
+local function placeOnGround(position: Vector3): Vector3
+	local ground = groundBelow(position + UP * 4, 80)
+	return ground or position
+end
+
+-- Teleport behind the target, somewhere no camcorder is currently pointed.
+local function tryRelocate(watcher: Watcher, targetRoot: BasePart, now: number): boolean
+	local behind = -flat(targetRoot.CFrame.LookVector)
+	if behind.Magnitude < 1e-3 then
+		behind = Vector3.new(0, 0, 1)
+	end
+	behind = behind.Unit
+	for _ = 1, 8 do
+		local angle = math.rad(rng:NextNumber(-70, 70))
+		local direction = CFrame.Angles(0, angle, 0):VectorToWorldSpace(behind)
+		local candidate = targetRoot.Position + direction * rng:NextNumber(W.RELOCATE_MIN, W.RELOCATE_MAX)
+		local ground = groundBelow(candidate + UP * 3, 30)
+		if ground and hasClearance(watcher, ground) and #observersOf(viewPointsAt(watcher, ground)) == 0 then
+			watcher.model:PivotTo(standingCFrame(watcher, ground, targetRoot.Position - ground))
+			watcher.lastRelocateAt = now
+			clearPath(watcher)
+			return true
+		end
+	end
+	watcher.lastRelocateAt = now - W.RELOCATE_COOLDOWN * 0.5 -- retry sooner
+	return false
+end
+
+local function respawnFar(watcher: Watcher)
+	local points = spawnPoints()
+	local best = points[1]
+	local bestScore = -math.huge
+	for _, point in points do
+		-- Prefer the spawn farthest from the nearest living player.
+		local nearest = math.huge
+		for _, player in Players:GetPlayers() do
+			local root = aliveRoot(player)
+			if root then
+				nearest = math.min(nearest, (root.Position - point).Magnitude)
+			end
+		end
+		if nearest > bestScore then
+			best, bestScore = point, nearest
+		end
+	end
+	local feet = placeOnGround(best)
+	watcher.model:PivotTo(standingCFrame(watcher, feet, watcher.model:GetPivot().LookVector))
+	clearPath(watcher)
+end
+
+-- Catching ----------------------------------------------------------------------------------------
+
+local function catch(watcher: Watcher, player: Player, humanoid: Humanoid, now: number)
+	watcher.cooldownUntil = now + W.COOLDOWN_AFTER_CATCH
+	watcher.target = nil
+	clearPath(watcher)
+	setState(watcher, "Cooldown")
+	CamcorderService.forceLower(player, "caught")
+	Net.WatcherFeedback:FireClient(player, "Caught", watcher.model)
+	task.delay(0.35, function()
+		if humanoid.Parent and humanoid.Health > 0 then
+			humanoid:TakeDamage(W.CATCH_DAMAGE)
+		end
+	end)
+	task.delay(W.COOLDOWN_AFTER_CATCH * 0.6, function()
+		if watcher.model.Parent then
+			respawnFar(watcher)
+		end
+	end)
+end
+
+-- Think (THINK_RATE Hz) ------------------------------------------------------------------------------
+
+local function think(watcher: Watcher, now: number)
+	local feet = feetOf(watcher)
+	local observers = observersOf(viewPointsAt(watcher, feet))
+	watcher.observers = observers
+	if #observers > 0 then
+		watcher.frozenUntil = now + W.MIN_FREEZE_HOLD
+		for _, callback in observedCallbacks do
+			task.spawn(callback, watcher.model, observers)
+		end
+	end
+
+	if now < watcher.frozenUntil then
+		setState(watcher, "Frozen")
+		return
+	end
+	if now < watcher.cooldownUntil then
+		setState(watcher, "Cooldown")
+		return
+	end
+
+	local target, root, humanoid, distance = pickTarget(watcher, feet)
+	if not target or not root or not humanoid then
+		watcher.target = nil
+		clearPath(watcher)
+		setState(watcher, "Idle")
+		return
+	end
+	if target ~= watcher.target then
+		watcher.target = target
+		clearPath(watcher)
+	end
+
+	-- Catch?
+	local offset = root.Position - feet
+	local verticalGap = math.abs(root.Position.Y - (feet.Y + watcher.hipHeight))
+	if flat(offset).Magnitude <= W.CATCH_RANGE and verticalGap <= W.CATCH_HEIGHT then
+		catch(watcher, target, humanoid, now)
+		return
+	end
+
+	-- Too far behind? Reappear somewhere behind them, out of every camcorder's view.
+	if distance > W.RELOCATE_DISTANCE and now - watcher.lastRelocateAt > W.RELOCATE_COOLDOWN then
+		if tryRelocate(watcher, root, now) then
+			return
+		end
+	end
+
+	local hunting = distance <= W.HUNT_RANGE
+	setState(watcher, if hunting then "Hunting" else "Stalking")
+	watcher.moveSpeed = if hunting then W.HUNT_SPEED else W.STALK_SPEED
+
+	local goal = groundBelow(root.Position, 12) or (root.Position - UP * (humanoid.HipHeight + root.Size.Y / 2))
+	watcher.directGoal = goal
+	local chest = feet + UP * (watcher.height * 0.55)
+	local closeEnough = distance <= DIRECT_CHASE_DISTANCE or watcher.pathFailed
+	watcher.directAllowed = closeEnough and clearLine(chest, root.Position)
+
+	local lastGoal = watcher.lastPathGoal
+	if
+		not lastGoal
+		or (goal - lastGoal).Magnitude > W.PATH_REPATH_DISTANCE
+		or now - watcher.lastPathAt > W.PATH_REFRESH
+	then
+		requestPath(watcher, goal, now)
+	end
+end
+
+-- Move (every Heartbeat) ---------------------------------------------------------------------------
+
+local function move(watcher: Watcher, dt: number)
+	if watcher.state ~= "Stalking" and watcher.state ~= "Hunting" then
+		return
+	end
+	local feet = feetOf(watcher)
+	local destination: Vector3? = nil
+	local direct = false
+
+	if watcher.directAllowed and watcher.directGoal then
+		destination = watcher.directGoal
+		direct = true
+	else
+		while watcher.waypointIndex <= #watcher.waypoints do
+			local waypoint = watcher.waypoints[watcher.waypointIndex]
+			if flat(waypoint - feet).Magnitude < 0.75 and math.abs(waypoint.Y - feet.Y) < 3 then
+				watcher.waypointIndex += 1
+			else
+				destination = waypoint
+				break
+			end
+		end
+	end
+	if not destination then
+		return
+	end
+
+	local delta = destination - feet
+	local length = delta.Magnitude
+	if length < 1e-3 then
+		return
+	end
+	local stepLength = watcher.moveSpeed * dt
+	local nextFeet = if length <= stepLength then destination else feet + delta / length * stepLength
+	if direct then
+		local ground = groundBelow(nextFeet + UP * 3, 8)
+		if ground then
+			nextFeet = ground
+		end
+	end
+	watcher.model:PivotTo(standingCFrame(watcher, nextFeet, delta))
+end
+
+-- Registration -----------------------------------------------------------------------------------
+
+local function register(model: Instance)
+	if not model:IsA("Model") or watchers[model] then
+		return
+	end
+	if not model:IsDescendantOf(workspace) then
+		return
+	end
+	if not model.PrimaryPart then
+		local first = model:FindFirstChildWhichIsA("BasePart", true)
+		if not first then
+			warn(`[Shutter] Watcher {model:GetFullName()} has no parts; ignoring it`)
+			return
+		end
+		model.PrimaryPart = first
+	end
+	for _, descendant in model:GetDescendants() do
+		if descendant:IsA("BasePart") then
+			descendant.Anchored = true
+			descendant.CanCollide = false
+			descendant.CanTouch = false
+			descendant.CastShadow = false
+		elseif descendant:IsA("Humanoid") then
+			warn(`[Shutter] Watcher {model:GetFullName()} contains a Humanoid; it is not needed and was removed`)
+			descendant:Destroy()
+		end
+	end
+	-- The Watcher is only ever seen through the camcorder.
+	if not CollectionService:HasTag(model, TAGS.CameraOnly) then
+		CollectionService:AddTag(model, TAGS.CameraOnly)
+	end
+
+	local boxCFrame, boxSize = model:GetBoundingBox()
+	local bottom = boxCFrame.Position.Y - boxSize.Y / 2
+	local pivot = model:GetPivot()
+	local watcher: Watcher = {
+		model = model,
+		hipHeight = math.max(0.5, pivot.Position.Y - bottom),
+		height = boxSize.Y,
+		state = "Idle",
+		target = nil,
+		path = PathfindingService:CreatePath({
+			AgentRadius = W.AGENT_RADIUS,
+			AgentHeight = W.AGENT_HEIGHT,
+			AgentCanJump = false,
+			AgentCanClimb = false,
+			WaypointSpacing = 4,
+		}),
+		waypoints = {},
+		waypointIndex = 1,
+		computingPath = false,
+		pathFailed = false,
+		lastPathAt = -math.huge,
+		lastPathGoal = nil,
+		directGoal = nil,
+		directAllowed = false,
+		moveSpeed = W.STALK_SPEED,
+		frozenUntil = 0,
+		cooldownUntil = 0,
+		lastRelocateAt = os.clock(),
+		observers = {},
+		connections = {},
+	}
+	model:SetAttribute(ATTR.WatcherState, "Idle")
+	model:SetAttribute(ATTR.WatcherFrozen, false)
+	watchers[model] = watcher
+	lastFilterRefresh = -math.huge
+
+	table.insert(
+		watcher.connections,
+		model.AncestryChanged:Connect(function()
+			if not model:IsDescendantOf(workspace) then
+				local entry = watchers[model]
+				if entry then
+					for _, connection in entry.connections do
+						connection:Disconnect()
+					end
+					watchers[model] = nil
+				end
+			end
+		end)
+	)
+end
+
+local function unregister(model: Instance)
+	if not model:IsA("Model") then
+		return
+	end
+	local entry = watchers[model]
+	if entry then
+		for _, connection in entry.connections do
+			connection:Disconnect()
+		end
+		watchers[model] = nil
+	end
+end
+
+local function spawnDefaultWatcher()
+	local points = spawnPoints()
+	local feet = placeOnGround(points[1])
+	local model = WatcherRig.build(feet, nil)
+	model.Parent = workspace -- the Entity tag registers it
+end
+
+-- Public API -------------------------------------------------------------------------------------
+
+function WatcherService.start()
+	if started then
+		return
+	end
+	started = true
+
+	CollectionService:GetInstanceAddedSignal(TAGS.Entity):Connect(register)
+	CollectionService:GetInstanceRemovedSignal(TAGS.Entity):Connect(unregister)
+	for _, model in CollectionService:GetTagged(TAGS.Entity) do
+		register(model)
+	end
+	if next(watchers) == nil and W.AUTO_SPAWN_IF_MISSING then
+		spawnDefaultWatcher()
+	end
+
+	local interval = 1 / W.THINK_RATE
+	local accumulator = 0
+	RunService.Heartbeat:Connect(function(dt: number)
+		accumulator += dt
+		if accumulator >= interval then
+			accumulator = math.min(accumulator - interval, interval)
+			local now = os.clock()
+			refreshFilters(now)
+			for _, watcher in watchers do
+				think(watcher, now)
+			end
+		end
+		for _, watcher in watchers do
+			move(watcher, dt)
+		end
+	end)
+end
+
+-- Players currently freezing this Watcher (empty table when it is free to move).
+function WatcherService.getObservers(model: Model): { Player }
+	local watcher = watchers[model]
+	return if watcher then table.clone(watcher.observers) else {}
+end
+
+function WatcherService.getState(model: Model): WatcherState?
+	local watcher = watchers[model]
+	return if watcher then watcher.state else nil
+end
+
+function WatcherService.getWatchers(): { Model }
+	local list: { Model } = {}
+	for model in watchers do
+		table.insert(list, model)
+	end
+	return list
+end
+
+-- Fires every think tick while at least one player is filming the Watcher.
+function WatcherService.onObserved(callback: ObservedCallback): () -> ()
+	table.insert(observedCallbacks, callback)
+	return function()
+		local index = table.find(observedCallbacks, callback)
+		if index then
+			table.remove(observedCallbacks, index)
+		end
+	end
+end
+
+return WatcherService
+]]></ProtectedString>
+				</Properties>
+			</Item>
+		</Item>
+	</Item>
+	<Item class="StarterPlayer" referent="RBX00000013">
+		<Properties>
+			<string name="Name">StarterPlayer</string>
+		</Properties>
+		<Item class="StarterPlayerScripts" referent="RBX00000014">
+			<Properties>
+				<string name="Name">StarterPlayerScripts</string>
+			</Properties>
+			<Item class="Folder" referent="RBX00000015">
+				<Properties>
+					<string name="Name">Shutter</string>
+				</Properties>
+				<Item class="ModuleScript" referent="RBX00000016">
+					<Properties>
+						<string name="Name">CamcorderController</string>
+						<ProtectedString name="Source"><![CDATA[--!strict
+-- CamcorderController (client): input and the look-direction stream.
+--
+--   F / gamepad L2 / on-screen "CAM" button  -> REQUEST raise or lower (server decides)
+--   LeftShift / gamepad L3 / "RUN" button    -> REQUEST sprint while held (server decides)
+--
+-- The client never sets its own camcorder state, speed or battery. It follows the server's
+-- Player attributes (ShutterCamcorder, ShutterBattery) and forwards camera look direction
+-- while filming so the server can work out what the camcorder is pointed at.
+
+local ContextActionService = game:GetService("ContextActionService")
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+
+local Shared = ReplicatedStorage:WaitForChild("Shutter")
+local Config = require(Shared:WaitForChild("Config"))
+local Net = require(Shared:WaitForChild("Net"))
+
+local CAM = Config.Camcorder
+local ATTR = Config.Attributes
+
+local player = Players.LocalPlayer
+
+type FilmingCallback = (filming: boolean) -> ()
+
+local CamcorderController = {}
+
+local filmingCallbacks: { FilmingCallback } = {}
+local filming = false
+local sprintHeld = false
+local lastSprintSent = false
+local lookAccumulator = 0
+local savedCameraMode: Enum.CameraMode? = nil
+local savedMaxZoom: number? = nil
+
+local ACTION_CAMCORDER = "ShutterCamcorder"
+local ACTION_SPRINT = "ShutterSprint"
+
+local function serverSaysFilming(): boolean
+	return player:GetAttribute(ATTR.CamcorderRaised) == true
+end
+
+local function sendSprint()
+	local want = sprintHeld
+	if want ~= lastSprintSent then
+		lastSprintSent = want
+		Net.SprintState:FireServer(want)
+	end
+end
+
+local function tweenFov(target: number)
+	local camera = workspace.CurrentCamera
+	if camera then
+		TweenService:Create(camera, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+			FieldOfView = target,
+		}):Play()
+	end
+end
+
+local function applyCameraMode(isFilming: boolean)
+	if not CAM.FORCE_FIRST_PERSON_WHILE_FILMING then
+		return
+	end
+	if isFilming then
+		if savedCameraMode == nil then
+			savedCameraMode = player.CameraMode
+			savedMaxZoom = player.CameraMaxZoomDistance
+		end
+		player.CameraMode = Enum.CameraMode.LockFirstPerson
+	else
+		if savedCameraMode ~= nil then
+			player.CameraMode = savedCameraMode
+			if savedMaxZoom then
+				player.CameraMaxZoomDistance = savedMaxZoom
+			end
+		end
+		savedCameraMode = nil
+		savedMaxZoom = nil
+	end
+end
+
+local function sendLook()
+	local camera = workspace.CurrentCamera
+	if camera then
+		Net.LookUpdate:FireServer(camera.CFrame.LookVector)
+	end
+end
+
+local function onFilmingAttribute()
+	local now = serverSaysFilming()
+	if now == filming then
+		return
+	end
+	filming = now
+	applyCameraMode(now)
+	tweenFov(if now then CAM.FILM_FIELD_OF_VIEW else CAM.NAKED_FIELD_OF_VIEW)
+	if now then
+		lookAccumulator = 0
+		sendLook() -- the server needs a look sample right away to freeze anything
+	end
+	for _, callback in filmingCallbacks do
+		task.spawn(callback, now)
+	end
+end
+
+local function onCamcorderAction(_: string, inputState: Enum.UserInputState, _input: InputObject): Enum.ContextActionResult
+	if inputState == Enum.UserInputState.Begin then
+		local humanoid = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+		if humanoid and humanoid.Health > 0 then
+			Net.CamcorderToggle:FireServer(not serverSaysFilming())
+		end
+	end
+	return Enum.ContextActionResult.Sink
+end
+
+local function onSprintAction(_: string, inputState: Enum.UserInputState, _input: InputObject): Enum.ContextActionResult
+	if inputState == Enum.UserInputState.Begin then
+		sprintHeld = true
+	elseif inputState == Enum.UserInputState.End or inputState == Enum.UserInputState.Cancel then
+		sprintHeld = false
+	end
+	sendSprint()
+	return Enum.ContextActionResult.Pass
+end
+
+function CamcorderController.start()
+	ContextActionService:BindAction(ACTION_CAMCORDER, onCamcorderAction, true, Enum.KeyCode.F, Enum.KeyCode.ButtonL2)
+	ContextActionService:SetTitle(ACTION_CAMCORDER, "CAM")
+	ContextActionService:SetPosition(ACTION_CAMCORDER, UDim2.new(1, -190, 1, -150))
+
+	ContextActionService:BindAction(ACTION_SPRINT, onSprintAction, true, Enum.KeyCode.LeftShift, Enum.KeyCode.ButtonL3)
+	ContextActionService:SetTitle(ACTION_SPRINT, "RUN")
+	ContextActionService:SetPosition(ACTION_SPRINT, UDim2.new(1, -250, 1, -90))
+
+	player:GetAttributeChangedSignal(ATTR.CamcorderRaised):Connect(onFilmingAttribute)
+	onFilmingAttribute()
+
+	player.CharacterAdded:Connect(function()
+		-- The server resets sprint on spawn; mirror that so the next press is sent.
+		sprintHeld = false
+		lastSprintSent = false
+	end)
+
+	local interval = 1 / CAM.LOOK_SEND_RATE
+	RunService.RenderStepped:Connect(function(dt: number)
+		if not filming then
+			return
+		end
+		lookAccumulator += dt
+		if lookAccumulator >= interval then
+			lookAccumulator = math.min(lookAccumulator - interval, interval)
+			sendLook()
+		end
+	end)
+
+	local camera = workspace.CurrentCamera
+	if camera then
+		camera.FieldOfView = CAM.NAKED_FIELD_OF_VIEW
+	end
+end
+
+function CamcorderController.isFilming(): boolean
+	return filming
+end
+
+function CamcorderController.onFilmingChanged(callback: FilmingCallback)
+	table.insert(filmingCallbacks, callback)
+end
+
+return CamcorderController
+]]></ProtectedString>
+					</Properties>
+				</Item>
+				<Item class="ModuleScript" referent="RBX00000017">
+					<Properties>
+						<string name="Name">CamcorderHud</string>
+						<ProtectedString name="Source"><![CDATA[--!strict
+-- CamcorderHud (client): the analog viewfinder. Purely visual; it reads server-owned
+-- attributes and never decides anything.
+--
+--   * Always on: a small battery meter (bottom-left).
+--   * While filming: REC dot, timecode, date stamp, corner brackets, scanlines, vignette,
+--     colour grading, interference bars that grow as the Watcher gets close, and a
+--     "SUBJECT HELD" readout while you are freezing it.
+--   * Caught: a short full-screen jumpscare.
+
+local Lighting = game:GetService("Lighting")
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+
+local Config = require(ReplicatedStorage:WaitForChild("Shutter"):WaitForChild("Config"))
+
+local CAM = Config.Camcorder
+
+local player = Players.LocalPlayer
+
+local CamcorderHud = {}
+
+local FONT = Enum.Font.Code
+local HUD_WHITE = Color3.fromRGB(235, 240, 230)
+local REC_RED = Color3.fromRGB(230, 40, 40)
+local LOW_RED = Color3.fromRGB(240, 70, 60)
+local BAR_GREEN = Color3.fromRGB(150, 230, 140)
+local INTERFERENCE_BARS = 7
+local SCANLINES = 48
+
+local gui: ScreenGui
+local viewfinder: Frame
+local recDot: Frame
+local timecodeLabel: TextLabel
+local dateLabel: TextLabel
+local heldLabel: TextLabel
+local lowBatteryLabel: TextLabel
+local batteryFill: Frame
+local batteryText: TextLabel
+local interference: { Frame } = {}
+local caughtFrame: Frame
+local caughtText: TextLabel
+local colorCorrection: ColorCorrectionEffect
+local blur: BlurEffect
+
+local filming = false
+local filmStartedAt = 0
+local interferenceLevel = 0
+local held = false
+local rng = Random.new()
+
+-- Battery prediction between server updates (display only).
+local serverBattery = CAM.MAX_BATTERY
+local serverBatteryAt = 0
+local loweredAt = -math.huge
+
+local function label(parent: Instance, name: string, text: string, size: UDim2, position: UDim2, anchor: Vector2): TextLabel
+	local text_ = Instance.new("TextLabel")
+	text_.Name = name
+	text_.BackgroundTransparency = 1
+	text_.Font = FONT
+	text_.Text = text
+	text_.TextColor3 = HUD_WHITE
+	text_.TextScaled = true
+	text_.TextStrokeTransparency = 0.6
+	text_.Size = size
+	text_.Position = position
+	text_.AnchorPoint = anchor
+	text_.Parent = parent
+	return text_
+end
+
+local function box(parent: Instance, name: string, size: UDim2, position: UDim2, color: Color3, transparency: number): Frame
+	local frame = Instance.new("Frame")
+	frame.Name = name
+	frame.BorderSizePixel = 0
+	frame.BackgroundColor3 = color
+	frame.BackgroundTransparency = transparency
+	frame.Size = size
+	frame.Position = position
+	frame.Parent = parent
+	return frame
+end
+
+local function cornerBracket(parent: Instance, anchor: Vector2, position: UDim2)
+	local holder = Instance.new("Frame")
+	holder.Name = "Bracket"
+	holder.BackgroundTransparency = 1
+	holder.Size = UDim2.fromOffset(46, 46)
+	holder.AnchorPoint = anchor
+	holder.Position = position
+	holder.Parent = parent
+	-- Horizontal and vertical strokes hugging the corner given by `anchor`.
+	box(holder, "H", UDim2.new(1, 0, 0, 3), UDim2.fromScale(0, anchor.Y), HUD_WHITE, 0.1).AnchorPoint = Vector2.new(0, anchor.Y)
+	box(holder, "V", UDim2.new(0, 3, 1, 0), UDim2.fromScale(anchor.X, 0), HUD_WHITE, 0.1).AnchorPoint = Vector2.new(anchor.X, 0)
+end
+
+local function edgeShade(parent: Instance, name: string, size: UDim2, position: UDim2, anchor: Vector2, rotation: number)
+	local shade = box(parent, name, size, position, Color3.new(0, 0, 0), 0)
+	shade.AnchorPoint = anchor
+	local gradient = Instance.new("UIGradient")
+	gradient.Rotation = rotation
+	gradient.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.15),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+	gradient.Parent = shade
+end
+
+local function build()
+	local playerGui = player:WaitForChild("PlayerGui")
+
+	gui = Instance.new("ScreenGui")
+	gui.Name = "ShutterHud"
+	gui.ResetOnSpawn = false
+	gui.IgnoreGuiInset = true
+	gui.DisplayOrder = 10
+	gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+	-- Viewfinder (filming only) ------------------------------------------------------
+	viewfinder = Instance.new("Frame")
+	viewfinder.Name = "Viewfinder"
+	viewfinder.BackgroundTransparency = 1
+	viewfinder.Size = UDim2.fromScale(1, 1)
+	viewfinder.Visible = false
+	viewfinder.Parent = gui
+
+	edgeShade(viewfinder, "VignetteTop", UDim2.fromScale(1, 0.22), UDim2.fromScale(0, 0), Vector2.zero, 90)
+	edgeShade(viewfinder, "VignetteBottom", UDim2.fromScale(1, 0.22), UDim2.fromScale(0, 1), Vector2.new(0, 1), -90)
+	edgeShade(viewfinder, "VignetteLeft", UDim2.fromScale(0.16, 1), UDim2.fromScale(0, 0), Vector2.zero, 0)
+	edgeShade(viewfinder, "VignetteRight", UDim2.fromScale(0.16, 1), UDim2.fromScale(1, 0), Vector2.new(1, 0), 180)
+
+	local scanlines = Instance.new("Frame")
+	scanlines.Name = "Scanlines"
+	scanlines.BackgroundTransparency = 1
+	scanlines.Size = UDim2.fromScale(1, 1)
+	scanlines.Parent = viewfinder
+	for i = 0, SCANLINES - 1 do
+		box(scanlines, "Line", UDim2.new(1, 0, 0, 1), UDim2.fromScale(0, i / SCANLINES), Color3.new(0, 0, 0), 0.82)
+	end
+
+	for i = 1, INTERFERENCE_BARS do
+		local bar = box(viewfinder, "Interference" .. i, UDim2.new(1, 0, 0, 2), UDim2.fromScale(0, 0), Color3.new(1, 1, 1), 1)
+		bar.ZIndex = 3
+		table.insert(interference, bar)
+	end
+
+	local margin = 28
+	cornerBracket(viewfinder, Vector2.new(0, 0), UDim2.fromOffset(margin, margin))
+	cornerBracket(viewfinder, Vector2.new(1, 0), UDim2.new(1, -margin, 0, margin))
+	cornerBracket(viewfinder, Vector2.new(0, 1), UDim2.new(0, margin, 1, -margin))
+	cornerBracket(viewfinder, Vector2.new(1, 1), UDim2.new(1, -margin, 1, -margin))
+
+	recDot = box(viewfinder, "RecDot", UDim2.fromOffset(16, 16), UDim2.fromOffset(margin + 26, margin + 22), REC_RED, 0)
+	local round = Instance.new("UICorner")
+	round.CornerRadius = UDim.new(1, 0)
+	round.Parent = recDot
+	label(viewfinder, "Rec", "REC", UDim2.fromOffset(60, 22), UDim2.fromOffset(margin + 48, margin + 19), Vector2.zero).TextXAlignment =
+		Enum.TextXAlignment.Left
+	timecodeLabel = label(viewfinder, "Timecode", "00:00:00:00", UDim2.fromOffset(170, 22), UDim2.new(1, -margin - 26, 0, margin + 19), Vector2.new(1, 0))
+	timecodeLabel.TextXAlignment = Enum.TextXAlignment.Right
+	dateLabel = label(viewfinder, "Date", "", UDim2.fromOffset(220, 22), UDim2.new(1, -margin - 26, 1, -margin - 19), Vector2.new(1, 1))
+	dateLabel.TextXAlignment = Enum.TextXAlignment.Right
+	label(viewfinder, "Mode", "SP  ▶", UDim2.fromOffset(80, 20), UDim2.new(0, margin + 26, 0, margin + 48), Vector2.zero).TextXAlignment =
+		Enum.TextXAlignment.Left
+
+	-- Centre reticle
+	box(viewfinder, "ReticleH", UDim2.fromOffset(18, 2), UDim2.fromScale(0.5, 0.5), HUD_WHITE, 0.35).AnchorPoint = Vector2.new(0.5, 0.5)
+	box(viewfinder, "ReticleV", UDim2.fromOffset(2, 18), UDim2.fromScale(0.5, 0.5), HUD_WHITE, 0.35).AnchorPoint = Vector2.new(0.5, 0.5)
+
+	heldLabel = label(viewfinder, "Held", "[ SUBJECT HELD ]", UDim2.fromOffset(260, 24), UDim2.new(0.5, 0, 0.5, 40), Vector2.new(0.5, 0))
+	heldLabel.TextColor3 = REC_RED
+	heldLabel.Visible = false
+
+	lowBatteryLabel = label(viewfinder, "LowBattery", "LOW BATTERY", UDim2.fromOffset(200, 24), UDim2.new(0.5, 0, 1, -margin - 22), Vector2.new(0.5, 1))
+	lowBatteryLabel.TextColor3 = LOW_RED
+	lowBatteryLabel.Visible = false
+
+	-- Battery meter (always visible) ------------------------------------------------------------
+	local battery = Instance.new("Frame")
+	battery.Name = "Battery"
+	battery.BackgroundTransparency = 1
+	battery.AnchorPoint = Vector2.new(0, 1)
+	battery.Position = UDim2.new(0, margin + 26, 1, -margin - 18)
+	battery.Size = UDim2.fromOffset(150, 22)
+	battery.Parent = gui
+
+	local shell = box(battery, "Shell", UDim2.fromOffset(60, 22), UDim2.fromScale(0, 0), Color3.new(0, 0, 0), 0.6)
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = HUD_WHITE
+	stroke.Thickness = 2
+	stroke.Parent = shell
+	box(battery, "Tip", UDim2.fromOffset(4, 10), UDim2.fromOffset(62, 6), HUD_WHITE, 0)
+	batteryFill = box(shell, "Fill", UDim2.new(1, -6, 1, -6), UDim2.fromOffset(3, 3), BAR_GREEN, 0)
+	batteryText = label(battery, "Percent", "100%", UDim2.fromOffset(70, 22), UDim2.fromOffset(74, 0), Vector2.zero)
+	batteryText.TextXAlignment = Enum.TextXAlignment.Left
+
+	-- Caught overlay ---------------------------------------------------------------------------
+	caughtFrame = box(gui, "Caught", UDim2.fromScale(1, 1), UDim2.fromScale(0, 0), Color3.new(0, 0, 0), 1)
+	caughtFrame.ZIndex = 20
+	caughtFrame.Visible = false
+	caughtText = label(caughtFrame, "Message", "YOU LOOKED AWAY", UDim2.fromScale(0.6, 0.08), UDim2.fromScale(0.5, 0.5), Vector2.new(0.5, 0.5))
+	caughtText.ZIndex = 21
+	caughtText.TextColor3 = REC_RED
+	caughtText.TextTransparency = 1
+
+	gui.Parent = playerGui
+
+	-- Colour grading lives in Lighting but is created by this LocalScript, so only this
+	-- client has it.
+	colorCorrection = Instance.new("ColorCorrectionEffect")
+	colorCorrection.Name = "ShutterCamcorderGrade"
+	colorCorrection.Enabled = false
+	colorCorrection.Saturation = -0.45
+	colorCorrection.Contrast = 0.18
+	colorCorrection.Brightness = 0.03
+	colorCorrection.TintColor = Color3.fromRGB(222, 255, 226)
+	colorCorrection.Parent = Lighting
+
+	blur = Instance.new("BlurEffect")
+	blur.Name = "ShutterCamcorderBlur"
+	blur.Enabled = false
+	blur.Size = 2
+	blur.Parent = Lighting
+end
+
+local function formatTimecode(seconds: number): string
+	local frames = math.floor((seconds % 1) * 30)
+	local whole = math.floor(seconds)
+	return string.format("%02d:%02d:%02d:%02d", whole // 3600, (whole // 60) % 60, whole % 60, frames)
+end
+
+local function predictedBattery(now: number): number
+	local elapsed = now - serverBatteryAt
+	local value = serverBattery
+	if filming then
+		value -= CAM.DRAIN_PER_SECOND * elapsed
+	else
+		local rechargeStart = math.max(serverBatteryAt, loweredAt + CAM.RECHARGE_DELAY)
+		if now > rechargeStart then
+			value += CAM.RECHARGE_PER_SECOND * (now - rechargeStart)
+		end
+	end
+	return math.clamp(value, 0, CAM.MAX_BATTERY)
+end
+
+local function render()
+	local now = os.clock()
+
+	-- Battery
+	local battery = predictedBattery(now)
+	local fraction = battery / CAM.MAX_BATTERY
+	batteryFill.Size = UDim2.new(fraction, -6 * fraction, 1, -6)
+	local low = fraction <= 0.2
+	batteryFill.BackgroundColor3 = if low then LOW_RED else BAR_GREEN
+	batteryText.Text = string.format("%d%%", math.floor(battery + 0.5))
+
+	if not filming then
+		return
+	end
+
+	local blinkOn = (now * 2) % 2 < 1.2
+	recDot.Visible = blinkOn
+	timecodeLabel.Text = formatTimecode(now - filmStartedAt)
+	lowBatteryLabel.Visible = low and blinkOn
+	heldLabel.Visible = held and (now * 4) % 2 < 1.4
+
+	-- Interference: more, brighter, thicker bars as the Watcher closes in.
+	local level = interferenceLevel
+	for i, bar in interference do
+		if level > 0.02 and rng:NextNumber() < 0.35 + level * 0.6 then
+			bar.Position = UDim2.fromScale(0, rng:NextNumber())
+			bar.Size = UDim2.new(1, 0, 0, math.floor(1 + level * rng:NextNumber(2, 14)))
+			bar.BackgroundTransparency = 1 - math.clamp(level * rng:NextNumber(0.25, 0.85), 0, 0.9)
+		else
+			bar.BackgroundTransparency = 1
+		end
+		bar.Visible = i <= math.ceil(level * INTERFERENCE_BARS)
+	end
+	-- Picture jitter at high interference.
+	local jitter = if level > 0.5 then (level - 0.5) * 8 else 0
+	viewfinder.Position = UDim2.fromOffset(rng:NextNumber(-jitter, jitter), rng:NextNumber(-jitter, jitter))
+	colorCorrection.Saturation = -0.45 - level * 0.4
+	colorCorrection.Contrast = 0.18 + level * 0.25
+	blur.Size = 2 + level * 6
+end
+
+local function onBatteryAttribute()
+	local value = player:GetAttribute(Config.Attributes.Battery)
+	if typeof(value) == "number" then
+		serverBattery = value
+		serverBatteryAt = os.clock()
+	end
+end
+
+function CamcorderHud.start()
+	build()
+	-- Analog date stamp: today's month/day/time, but the year is always 1996.
+	local now = DateTime.now()
+	dateLabel.Text = string.upper(now:FormatLocalTime("MMM DD", "en-us") .. " 1996  " .. now:FormatLocalTime("hh:mm A", "en-us"))
+	onBatteryAttribute()
+	player:GetAttributeChangedSignal(Config.Attributes.Battery):Connect(onBatteryAttribute)
+	RunService.RenderStepped:Connect(render)
+end
+
+function CamcorderHud.setFilming(isFilming: boolean)
+	if filming == isFilming then
+		return
+	end
+	filming = isFilming
+	viewfinder.Visible = isFilming
+	colorCorrection.Enabled = isFilming
+	blur.Enabled = isFilming
+	-- Re-anchor the prediction at the moment the state flipped.
+	serverBattery = predictedBattery(os.clock())
+	serverBatteryAt = os.clock()
+	if isFilming then
+		filmStartedAt = os.clock()
+	else
+		loweredAt = os.clock()
+		held = false
+		heldLabel.Visible = false
+	end
+end
+
+-- 0..1, driven by WatcherFX
+function CamcorderHud.setInterference(level: number)
+	interferenceLevel = math.clamp(level, 0, 1)
+end
+
+function CamcorderHud.setHeld(isHeld: boolean)
+	held = isHeld
+end
+
+function CamcorderHud.playCaught()
+	caughtFrame.Visible = true
+	caughtFrame.BackgroundColor3 = Color3.new(1, 1, 1)
+	caughtFrame.BackgroundTransparency = 0
+	caughtText.TextTransparency = 1
+	task.delay(0.08, function()
+		caughtFrame.BackgroundColor3 = Color3.new(0, 0, 0)
+		caughtText.TextTransparency = 0
+	end)
+	task.delay(2.4, function()
+		local info = TweenInfo.new(1.2)
+		TweenService:Create(caughtFrame, info, { BackgroundTransparency = 1 }):Play()
+		TweenService:Create(caughtText, info, { TextTransparency = 1 }):Play()
+		task.delay(1.25, function()
+			caughtFrame.Visible = false
+		end)
+	end)
+end
+
+-- Optional one-shot sound helper used by the controller and FX.
+function CamcorderHud.playSound(soundId: string, volume: number)
+	if soundId == "" then
+		return
+	end
+	local sound = Instance.new("Sound")
+	sound.SoundId = soundId
+	sound.Volume = volume
+	sound.Parent = gui
+	sound.Ended:Connect(function()
+		sound:Destroy()
+	end)
+	sound:Play()
+end
+
+return CamcorderHud
+]]></ProtectedString>
+					</Properties>
+				</Item>
+				<Item class="ModuleScript" referent="RBX00000018">
+					<Properties>
+						<string name="Name">RealityRenderer</string>
+						<ProtectedString name="Source"><![CDATA[--!strict
+-- RealityRenderer (client): the Dual-Reality layer swap.
+--
+--   CameraOnly    -> drawn only while the server says this player is filming
+--   NakedEyeOnly  -> drawn only while NOT filming
+--
+-- A tag covers the tagged instance and all its descendants. If a descendant sits under both
+-- kinds of tag, the nearest tagged ancestor wins (so a NakedEyeOnly wall can live inside a
+-- ShutterDoor model next to a CameraOnly door).
+--
+-- How each class is hidden locally (nothing here replicates):
+--   BasePart                            LocalTransparencyModifier = 1
+--   Decal / Texture                     Transparency = 1
+--   Light, ParticleEmitter, Beam, Trail, Fire, Smoke, Sparkles, Highlight,
+--   BillboardGui, SurfaceGui, ProximityPrompt                   Enabled = false
+--   Sound                               Volume = 0
+-- If the server later changes one of those properties, the new value is adopted as the
+-- "real" value and the layer is re-applied, so server changes are never lost.
+--
+-- Security note: hiding is cosmetic. Anything that matters (prompt use, freezing the Watcher)
+-- is validated on the server against the server's camcorder state.
+
+local CollectionService = game:GetService("CollectionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Config = require(ReplicatedStorage:WaitForChild("Shutter"):WaitForChild("Config"))
+
+local TAGS = Config.Tags
+
+type Layer = "Camera" | "Naked"
+
+type Entry = {
+	instance: Instance,
+	layer: Layer,
+	property: string,
+	hiddenValue: any,
+	original: any,
+	applying: boolean,
+	connections: { RBXScriptConnection },
+}
+
+local RealityRenderer = {}
+
+local entries: { [Instance]: Entry } = {}
+local rootConnections: { [Instance]: { RBXScriptConnection } } = {}
+local filming = false
+local started = false
+
+local ENABLED_CLASSES = {
+	"Light",
+	"ParticleEmitter",
+	"Beam",
+	"Trail",
+	"Fire",
+	"Smoke",
+	"Sparkles",
+	"Highlight",
+	"BillboardGui",
+	"SurfaceGui",
+	"ProximityPrompt",
+}
+
+local function controlFor(instance: Instance): (string?, any)
+	if instance:IsA("BasePart") then
+		return "LocalTransparencyModifier", 1
+	elseif instance:IsA("Decal") then -- includes Texture
+		return "Transparency", 1
+	elseif instance:IsA("Sound") then
+		return "Volume", 0
+	end
+	for _, className in ENABLED_CLASSES do
+		if instance:IsA(className) then
+			return "Enabled", false
+		end
+	end
+	return nil, nil
+end
+
+local function layerOf(instance: Instance): Layer?
+	local current: Instance? = instance
+	while current and current ~= game do
+		if CollectionService:HasTag(current, TAGS.CameraOnly) then
+			return "Camera"
+		elseif CollectionService:HasTag(current, TAGS.NakedEyeOnly) then
+			return "Naked"
+		end
+		current = current.Parent
+	end
+	return nil
+end
+
+local function shouldShow(layer: Layer): boolean
+	return if layer == "Camera" then filming else not filming
+end
+
+local function write(entry: Entry, value: any)
+	local target = entry.instance :: any
+	if target[entry.property] == value then
+		return
+	end
+	entry.applying = true
+	target[entry.property] = value
+	entry.applying = false
+end
+
+local function apply(entry: Entry)
+	if shouldShow(entry.layer) then
+		-- LocalTransparencyModifier has no "original": visible is always 0.
+		write(entry, if entry.property == "LocalTransparencyModifier" then 0 else entry.original)
+	else
+		write(entry, entry.hiddenValue)
+	end
+end
+
+local function unregister(instance: Instance)
+	local entry = entries[instance]
+	if not entry then
+		return
+	end
+	entries[instance] = nil
+	for _, connection in entry.connections do
+		connection:Disconnect()
+	end
+	if instance.Parent then
+		-- Leave it as the server intends: visible.
+		write(entry, if entry.property == "LocalTransparencyModifier" then 0 else entry.original)
+	end
+end
+
+local function register(instance: Instance)
+	local layer = layerOf(instance)
+	local existing = entries[instance]
+	if not layer then
+		if existing then
+			unregister(instance)
+		end
+		return
+	end
+	if existing then
+		existing.layer = layer
+		apply(existing)
+		return
+	end
+	local property, hiddenValue = controlFor(instance)
+	if not property then
+		return
+	end
+	local entry: Entry = {
+		instance = instance,
+		layer = layer,
+		property = property,
+		hiddenValue = hiddenValue,
+		original = (instance :: any)[property],
+		applying = false,
+		connections = {},
+	}
+	entries[instance] = entry
+
+	if property ~= "LocalTransparencyModifier" then
+		table.insert(
+			entry.connections,
+			instance:GetPropertyChangedSignal(property):Connect(function()
+				if entry.applying then
+					return
+				end
+				-- Changed by the server (or another script): that is the new real value.
+				entry.original = (instance :: any)[property]
+				apply(entry)
+			end)
+		)
+	end
+	table.insert(
+		entry.connections,
+		instance.AncestryChanged:Connect(function()
+			if not instance:IsDescendantOf(game) then
+				unregister(instance)
+			else
+				register(instance) -- re-parented: its layer may have changed
+			end
+		end)
+	)
+	apply(entry)
+end
+
+local function registerTree(root: Instance)
+	register(root)
+	for _, descendant in root:GetDescendants() do
+		register(descendant)
+	end
+end
+
+local function onTagged(root: Instance)
+	registerTree(root)
+	if rootConnections[root] then
+		return
+	end
+	rootConnections[root] = {
+		root.DescendantAdded:Connect(register),
+	}
+end
+
+local function onUntagged(root: Instance)
+	-- Recompute: descendants may now belong to another layer or to none.
+	if not CollectionService:HasTag(root, TAGS.CameraOnly) and not CollectionService:HasTag(root, TAGS.NakedEyeOnly) then
+		local connections = rootConnections[root]
+		if connections then
+			for _, connection in connections do
+				connection:Disconnect()
+			end
+			rootConnections[root] = nil
+		end
+	end
+	registerTree(root)
+end
+
+function RealityRenderer.start()
+	if started then
+		return
+	end
+	started = true
+	for _, tag in { TAGS.CameraOnly, TAGS.NakedEyeOnly } do
+		CollectionService:GetInstanceAddedSignal(tag):Connect(onTagged)
+		CollectionService:GetInstanceRemovedSignal(tag):Connect(onUntagged)
+		for _, instance in CollectionService:GetTagged(tag) do
+			onTagged(instance)
+		end
+	end
+end
+
+function RealityRenderer.setFilming(isFilming: boolean)
+	if filming == isFilming then
+		return
+	end
+	filming = isFilming
+	for _, entry in entries do
+		apply(entry)
+	end
+end
+
+function RealityRenderer.isFilming(): boolean
+	return filming
+end
+
+return RealityRenderer
+]]></ProtectedString>
+					</Properties>
+				</Item>
+				<Item class="LocalScript" referent="RBX00000019">
+					<Properties>
+						<string name="Name">ShutterClient</string>
+						<ProtectedString name="Source"><![CDATA[--!strict
+-- THE SHUTTER client bootstrap. The only LocalScript; everything else is a module.
+-- The server's ShutterCamcorder attribute is the single source of truth for which reality
+-- this client draws.
+
+local folder = script.Parent
+
+local RealityRenderer = require(folder:WaitForChild("RealityRenderer"))
+local CamcorderHud = require(folder:WaitForChild("CamcorderHud"))
+local CamcorderController = require(folder:WaitForChild("CamcorderController"))
+local WatcherFX = require(folder:WaitForChild("WatcherFX"))
+local Config = require(game:GetService("ReplicatedStorage"):WaitForChild("Shutter"):WaitForChild("Config"))
+
+RealityRenderer.start()
+CamcorderHud.start()
+
+CamcorderController.onFilmingChanged(function(filming: boolean)
+	RealityRenderer.setFilming(filming)
+	CamcorderHud.setFilming(filming)
+	CamcorderHud.playSound(if filming then Config.FX.CAMCORDER_ON_SOUND else Config.FX.CAMCORDER_OFF_SOUND, 0.6)
+end)
+
+CamcorderController.start()
+WatcherFX.start()
+]]></ProtectedString>
+					</Properties>
+				</Item>
+				<Item class="ModuleScript" referent="RBX0000001A">
+					<Properties>
+						<string name="Name">WatcherFX</string>
+						<ProtectedString name="Source"><![CDATA[--!strict
+-- WatcherFX (client): what the player FEELS of the Watcher. Display only.
+--   * Camcorder interference rises as any Watcher gets closer (only visible while filming,
+--     so the naked-eye world stays pristine).
+--   * "SUBJECT HELD" shows while the server reports the Watcher frozen AND it is on screen.
+--   * The server's "Caught" message plays the jumpscare.
+
+local CollectionService = game:GetService("CollectionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+
+local Shared = ReplicatedStorage:WaitForChild("Shutter")
+local Config = require(Shared:WaitForChild("Config"))
+local Net = require(Shared:WaitForChild("Net"))
+local CamcorderHud = require(script.Parent:WaitForChild("CamcorderHud"))
+local RealityRenderer = require(script.Parent:WaitForChild("RealityRenderer"))
+
+local FX = Config.FX
+local ATTR = Config.Attributes
+
+local WatcherFX = {}
+
+local staticSound: Sound? = nil
+
+local function nearestWatcher(from: Vector3): (Model?, number)
+	local best: Model? = nil
+	local bestDistance = math.huge
+	for _, instance in CollectionService:GetTagged(Config.Tags.Entity) do
+		if instance:IsA("Model") and instance:IsDescendantOf(workspace) then
+			local distance = (instance:GetPivot().Position - from).Magnitude
+			if distance < bestDistance then
+				best, bestDistance = instance, distance
+			end
+		end
+	end
+	return best, bestDistance
+end
+
+local function update()
+	local camera = workspace.CurrentCamera
+	if not camera then
+		return
+	end
+	local filming = RealityRenderer.isFilming()
+	local watcher, distance = nearestWatcher(camera.CFrame.Position)
+	local level = 0
+	if watcher then
+		level = math.clamp(1 - distance / FX.STATIC_START_DISTANCE, 0, 1)
+	end
+	CamcorderHud.setInterference(level)
+
+	local held = false
+	if filming and watcher and watcher:GetAttribute(ATTR.WatcherFrozen) == true then
+		local _, onScreen = camera:WorldToViewportPoint(watcher:GetPivot().Position)
+		held = onScreen
+	end
+	CamcorderHud.setHeld(held)
+
+	local sound = staticSound
+	if sound then
+		sound.Volume = if filming then level * 0.8 else 0
+	end
+end
+
+function WatcherFX.start()
+	if FX.STATIC_LOOP_SOUND ~= "" then
+		local sound = Instance.new("Sound")
+		sound.Name = "ShutterStatic"
+		sound.SoundId = FX.STATIC_LOOP_SOUND
+		sound.Looped = true
+		sound.Volume = 0
+		sound.Parent = script
+		sound:Play()
+		staticSound = sound
+	end
+
+	Net.WatcherFeedback.OnClientEvent:Connect(function(kind: unknown, _data: unknown)
+		if kind == "Caught" then
+			CamcorderHud.playCaught()
+			CamcorderHud.playSound(FX.JUMPSCARE_SOUND, 1)
+		end
+	end)
+
+	RunService.RenderStepped:Connect(update)
+end
+
+return WatcherFX
+]]></ProtectedString>
+					</Properties>
+				</Item>
+			</Item>
+		</Item>
+	</Item>
+</roblox>

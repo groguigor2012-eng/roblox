@@ -3,3 +3,6 @@
 sourcemap.json
 tests/.mods/
 __pycache__/
+
+# THE SHUTTER ships its built Studio files
+!shutter/build/*.rbxlx

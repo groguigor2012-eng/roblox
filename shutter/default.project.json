@@ -1,0 +1,30 @@
+{
+  "name": "TheShutter",
+  "tree": {
+    "$className": "DataModel",
+    "ReplicatedStorage": {
+      "Shutter": {
+        "$path": "src/shared",
+        "Remotes": {
+          "$className": "Folder",
+          "CamcorderToggle": { "$className": "RemoteEvent" },
+          "SprintState": { "$className": "RemoteEvent" },
+          "LookUpdate": { "$className": "UnreliableRemoteEvent" },
+          "WatcherFeedback": { "$className": "RemoteEvent" }
+        }
+      }
+    },
+    "ServerScriptService": {
+      "Shutter": {
+        "$path": "src/server"
+      }
+    },
+    "StarterPlayer": {
+      "StarterPlayerScripts": {
+        "Shutter": {
+          "$path": "src/client"
+        }
+      }
+    }
+  }
+}

@@ -1,5 +1,7 @@
 # Poolrooms
 
+> **THE SHUTTER** (camcorder dual-reality horror: camcorder/battery core, dual-reality rendering, The Watcher AI) lives in [`shutter/`](shutter/README.md), with a ready-to-open Studio place in `shutter/build/TheShutter.rbxlx`.
+
 An infinite, procedurally generated **Poolrooms** for Roblox: white-tiled liminal halls filled
 with still, turquoise water, lit by soft daylight from openings you can't quite see.
 
